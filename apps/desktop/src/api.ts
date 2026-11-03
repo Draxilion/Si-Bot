@@ -1,4 +1,4 @@
-import type { AttachmentMeta, ChatEvent, ChatRequest, Fact, Message, ModelOption, Task } from '@si-bot/shared'
+import type { Activity, AttachmentMeta, Bot, BotInput, ChatEvent, ChatRequest, Fact, LibraryItem, Message, ModelOption, Task } from '@si-bot/shared'
 
 export interface Connection {
   url: string
@@ -48,14 +48,26 @@ export class Api {
   }
 
   models = () => this.req<{ models: ModelOption[]; default: string | null }>('/api/models')
-  messages = (before?: number) => this.req<{ messages: Message[] }>(`/api/messages${before ? `?before=${before}` : ''}`)
-  newer = (after: number) => this.req<{ messages: Message[] }>(`/api/messages?after=${after}`)
+  messages = (botId: number, before?: number) =>
+    this.req<{ messages: Message[] }>(`/api/messages?bot=${botId}${before ? `&before=${before}` : ''}`)
+  newer = (botId: number, after: number) => this.req<{ messages: Message[] }>(`/api/messages?bot=${botId}&after=${after}`)
+  bots = () => this.req<{ bots: Bot[] }>('/api/bots')
+  createBot = (b: BotInput) => this.req<{ bot: Bot; bots: Bot[] }>('/api/bots', { method: 'POST', body: JSON.stringify(b) })
+  updateBot = (id: number, b: BotInput) =>
+    this.req<{ bot: Bot; bots: Bot[] }>(`/api/bots/${id}`, { method: 'PATCH', body: JSON.stringify(b) })
+  deleteBot = (id: number) => this.req<{ bots: Bot[] }>(`/api/bots/${id}`, { method: 'DELETE' })
+  library = (id: number) => this.req<{ items: LibraryItem[] }>(`/api/bots/${id}/library`)
+  activity = (id: number) => this.req<{ items: Activity[] }>(`/api/bots/${id}/activity`)
   search = (q: string) => this.req<{ messages: (Message & { snippet: string })[] }>(`/api/search?q=${encodeURIComponent(q)}`)
-  context = () => this.req<{ notes: string; digest: { text: string; upToId: number; updatedAt: string } | null }>('/api/context')
-  saveContext = (body: { notes?: string; digest?: string }) =>
-    this.req<{ notes: string; digest: { text: string; upToId: number; updatedAt: string } | null }>('/api/context', { method: 'PUT', body: JSON.stringify(body) })
-  tasks = () => this.req<{ tasks: Task[] }>('/api/tasks')
-  addTask = (t: { title: string; prompt: string; cron?: string; runAt?: string; timezone?: string }) =>
+  context = (botId: number) =>
+    this.req<{ notes: string; digest: { text: string; upToId: number; updatedAt: string } | null }>(`/api/context?bot=${botId}`)
+  saveContext = (botId: number, body: { notes?: string; digest?: string }) =>
+    this.req<{ notes: string; digest: { text: string; upToId: number; updatedAt: string } | null }>(`/api/context?bot=${botId}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    })
+  tasks = (botId?: number) => this.req<{ tasks: Task[] }>(`/api/tasks${botId ? `?bot=${botId}` : ''}`)
+  addTask = (t: { botId?: number; title: string; prompt: string; cron?: string; runAt?: string; timezone?: string }) =>
     this.req<{ tasks: Task[] }>('/api/tasks', { method: 'POST', body: JSON.stringify(t) })
   setTaskEnabled = (id: number, enabled: boolean) =>
     this.req<{ tasks: Task[] }>(`/api/tasks/${id}`, { method: 'PATCH', body: JSON.stringify({ enabled }) })

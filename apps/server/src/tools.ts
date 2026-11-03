@@ -105,7 +105,7 @@ export async function pdfText(data: Uint8Array): Promise<string> {
   return (text as string[]).map((t, i) => `[page ${i + 1}]\n${t.trim()}`).join('\n\n')
 }
 
-async function runCode(language: 'python' | 'javascript', code: string) {
+async function runCode(language: 'python' | 'javascript', code: string, botId?: number) {
   const res = await fetch(new URL('/run', env.SANDBOX_URL), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -123,7 +123,7 @@ async function runCode(language: 'python' | 'javascript', code: string) {
   // Charts and other images the code saved are stored as files; the model gets markdown it can show in its answer.
   const images = []
   for (const img of out.images ?? []) {
-    const meta = await saveAttachment(img.name, img.mediaType, new Uint8Array(Buffer.from(img.base64, 'base64')))
+    const meta = await saveAttachment(img.name, img.mediaType, new Uint8Array(Buffer.from(img.base64, 'base64')), botId)
     images.push({ file: img.name, markdown: `![${img.name}](attachment:${meta.id})` })
   }
   const { images: _drop, ...rest } = out
@@ -131,7 +131,7 @@ async function runCode(language: 'python' | 'javascript', code: string) {
 }
 
 /** Tools available to the assistant; each is enabled only when its backing service is configured. */
-export function buildTools() {
+export function buildTools(botId?: number) {
   const tools: Record<string, any> = {}
 
   if (env.SEARXNG_URL || env.BRAVE_API_KEY) {
@@ -177,7 +177,7 @@ export function buildTools() {
         language: z.enum(['python', 'javascript']),
         code: z.string(),
       }),
-      execute: async ({ language, code }) => runCode(language, code),
+      execute: async ({ language, code }) => runCode(language, code, botId),
     })
   }
 
@@ -204,6 +204,7 @@ export function describeCall(name: string, input: any): string {
   if (name === 'create_task') return `Scheduled "${input?.title ?? 'a task'}"`
   if (name === 'list_tasks') return 'Checked scheduled tasks'
   if (name === 'update_notes') return 'Updated its notebook'
+  if (name === 'message_bot') return `Messaged ${input?.bot ?? 'a bot'}`
   if (name === 'cancel_task') return 'Cancelled a scheduled task'
   if (name === 'remember') return `Remembered: ${input?.fact ?? ''}`
   if (name === 'recall_memory') return `Searched memory for "${input?.query ?? ''}"`

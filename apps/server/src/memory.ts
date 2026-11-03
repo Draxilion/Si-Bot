@@ -82,7 +82,7 @@ export async function extractFacts(userText: string, assistantText: string, sour
 }
 
 /** Tools that let the assistant manage its own memory mid-conversation. */
-export function memoryTools() {
+export function memoryTools(botId: number) {
   return {
     remember: tool({
       description:
@@ -100,7 +100,7 @@ export function memoryTools() {
         'Use it when the user refers to something from the past that is not in the recent conversation.',
       inputSchema: z.object({ query: z.string() }),
       execute: async ({ query }) => {
-        const found = await recall(query, { limit: 10 })
+        const found = await recall(query, { limit: 10, botId })
         return { results: found.length ? formatRecalled(found, 1200) : 'Nothing found.' }
       },
     }),

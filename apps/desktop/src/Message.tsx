@@ -1,7 +1,23 @@
-import { useEffect, useState } from 'react'
-import type { AttachmentMeta, Message, Source, ToolStep } from '@si-bot/shared'
+import { createContext, useContext, useEffect, useState } from 'react'
+import type { AttachmentMeta, Bot, Message, Source, ToolStep } from '@si-bot/shared'
+import { Avatar } from './Avatar'
 import { Icon } from './icons'
 import { CopyButton, Markdown } from './Markdown'
+
+/** All bots, so messages can show who another bot is. */
+export const BotsContext = createContext<Bot[]>([])
+
+function BotChip({ name, prefix }: { name: string; prefix: string }) {
+  const bots = useContext(BotsContext)
+  const bot = bots.find((b) => b.name.toLowerCase() === name.toLowerCase())
+  return (
+    <div className="bot-chip">
+      {prefix}
+      {bot && <Avatar avatar={bot.avatar} name={bot.name} size={18} />}
+      <strong>{bot?.name ?? name}</strong>
+    </div>
+  )
+}
 
 export interface LiveReply {
   text: string
@@ -77,7 +93,7 @@ function Thinking({ text, live, ms }: { text: string; live: boolean; ms?: number
   )
 }
 
-function Step({ step }: { step: ToolStep }) {
+export function Step({ step }: { step: ToolStep }) {
   const running = step.output === undefined && step.error === undefined
   const code = step.name === 'run_code' ? (step.input as any)?.code : null
   return (
@@ -202,6 +218,7 @@ export function UserMessage(props: {
   onEdit?: (text: string) => void
 }) {
   const { message: m } = props
+  const bots = useContext(BotsContext)
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(m.content)
   if (editing) {
@@ -223,6 +240,15 @@ export function UserMessage(props: {
             Send
           </button>
         </div>
+      </div>
+    )
+  }
+  if (m.fromBotId) {
+    const from = bots.find((b) => b.id === m.fromBotId)
+    return (
+      <div className="turn from-bot">
+        <BotChip name={from?.name ?? 'another bot'} prefix="Message from" />
+        <div className="msg from-bot">{m.content}</div>
       </div>
     )
   }
@@ -254,10 +280,12 @@ export function AssistantMessage(props: {
   const speech = useSpeech()
   const text = live ? live.text : m!.content
   const reasoning = live ? live.reasoning : m?.reasoning
-  const steps = live ? live.steps : (m?.steps ?? [])
+  const allSteps = live ? live.steps : (m?.steps ?? [])
+  const steps = allSteps.filter((s) => s.name !== 'message_bot')
+  const messaged = allSteps.filter((s) => s.name === 'message_bot')
   const sources = live ? live.sources : (m?.sources ?? [])
   const thinkingLive = !!live && !live.reasoningDone && !live.text
-  const waiting = !!live && !live.text && !live.reasoning && !steps.length
+  const waiting = !!live && !live.text && !live.reasoning && !allSteps.length
   return (
     <div className={`turn assistant ${live ? 'live' : ''}`}>
       {props.taskTitle && (
@@ -268,6 +296,12 @@ export function AssistantMessage(props: {
       )}
       {reasoning && <Thinking text={reasoning} live={thinkingLive} ms={m?.thoughtMs} />}
       <Steps steps={steps} live={!!live} />
+      {messaged.map((s) => (
+        <div key={s.id} className="bot-chip-row">
+          <BotChip name={(s.input as any)?.bot ?? ''} prefix="Messaged" />
+          {s.output === undefined && s.error === undefined && <span className="spinner" />}
+        </div>
+      ))}
       {waiting && (
         <div className="typing">
           <span />

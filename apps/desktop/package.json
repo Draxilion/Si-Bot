@@ -11,6 +11,8 @@
     "tauri": "tauri"
   },
   "dependencies": {
+    "@dicebear/collection": "^9.2.4",
+    "@dicebear/core": "^9.4.3",
     "@si-bot/shared": "workspace:*",
     "highlight.js": "^11.12.0",
     "katex": "^0.19.1",

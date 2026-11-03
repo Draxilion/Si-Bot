@@ -7,6 +7,7 @@ import { getSetting, sql } from './db.js'
 export function toTask(r: any): Task {
   return {
     id: Number(r.id),
+    botId: Number(r.bot_id),
     title: r.title,
     prompt: r.prompt,
     cron: r.cron,
@@ -24,12 +25,21 @@ export function nextCronRun(cron: string, timezone: string, from = new Date()): 
   return new Cron(cron, { timezone, paused: true }).nextRun(from)
 }
 
-export async function listTasks(): Promise<Task[]> {
-  const rows = await sql`select * from tasks order by enabled desc, next_run_at nulls last, id`
+export async function listTasks(botId?: number): Promise<Task[]> {
+  const rows = await sql`
+    select * from tasks ${botId ? sql`where bot_id = ${botId}` : sql``}
+    order by enabled desc, next_run_at nulls last, id`
   return rows.map(toTask)
 }
 
-export async function createTask(input: { title: string; prompt: string; cron?: string; runAt?: string; timezone?: string }) {
+export async function createTask(input: {
+  botId: number
+  title: string
+  prompt: string
+  cron?: string
+  runAt?: string
+  timezone?: string
+}) {
   const timezone = input.timezone || (await getSetting('timezone', 'UTC'))
   let next: Date | null
   if (input.cron) {
@@ -42,8 +52,8 @@ export async function createTask(input: { title: string; prompt: string; cron?: 
     throw new Error('Give either cron (repeating) or run_at (one-off)')
   }
   const [row] = await sql`
-    insert into tasks (title, prompt, cron, run_at, timezone, next_run_at)
-    values (${input.title}, ${input.prompt}, ${input.cron ?? null}, ${input.runAt ? new Date(input.runAt) : null},
+    insert into tasks (bot_id, title, prompt, cron, run_at, timezone, next_run_at)
+    values (${input.botId}, ${input.title}, ${input.prompt}, ${input.cron ?? null}, ${input.runAt ? new Date(input.runAt) : null},
             ${timezone}, ${next})
     returning *`
   return toTask(row)
@@ -79,7 +89,7 @@ function forModel(t: Task) {
 }
 
 /** Tools that let Si schedule work for itself. */
-export function taskTools(getTimezone: () => string | undefined) {
+export function taskTools(botId: number, getTimezone: () => string | undefined) {
   return {
     create_task: tool({
       description:
@@ -95,20 +105,20 @@ export function taskTools(getTimezone: () => string | undefined) {
         run_at: z.string().optional().describe('ISO 8601 date-time with offset for a one-off run, e.g. "2026-11-04T09:30:00+02:00"'),
       }),
       execute: async ({ title, prompt, cron, run_at }) => {
-        const task = await createTask({ title, prompt, cron, runAt: run_at, timezone: getTimezone() })
+        const task = await createTask({ botId, title, prompt, cron, runAt: run_at, timezone: getTimezone() })
         return { scheduled: task.title, id: task.id, next_run: localTime(task.nextRunAt, task.timezone) }
       },
     }),
     list_tasks: tool({
       description: 'List your scheduled tasks with their ids and next run times.',
       inputSchema: z.object({}),
-      execute: async () => ({ tasks: (await listTasks()).map(forModel) }),
+      execute: async () => ({ tasks: (await listTasks(botId)).map(forModel) }),
     }),
     cancel_task: tool({
       description: 'Delete a scheduled task by id (use list_tasks to find it).',
       inputSchema: z.object({ id: z.number() }),
       execute: async ({ id }) => {
-        await deleteTask(id)
+        await sql`delete from tasks where id = ${id} and bot_id = ${botId}`
         return { cancelled: id }
       },
     }),

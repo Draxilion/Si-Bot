@@ -1,15 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { AttachmentMeta, Fact, Message, ModelOption, Task } from '@si-bot/shared'
+import type { AttachmentMeta, Bot, Message, ModelOption, Task } from '@si-bot/shared'
 import { Api, loadConnection, saveConnection, type Connection } from './api'
 import { Icon } from './icons'
-import { AssistantMessage, UserMessage, type LiveReply } from './Message'
+import { AssistantMessage, BotsContext, UserMessage, type LiveReply } from './Message'
 import { Composer } from './Composer'
-import { Markdown, setFileResolver } from './Markdown'
+import { setFileResolver } from './Markdown'
+import { Avatar, randomAvatar, setAvatarFileResolver } from './Avatar'
+import { Sidebar, type Page } from './Sidebar'
+import { BotPanel } from './BotPanel'
+import { DayDivider, MemoryView, SearchView, SettingsView, TasksView } from './Pages'
 
-type View = 'chat' | 'search' | 'tasks' | 'memory' | 'settings'
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone
 
-function usePref<T>(key: string, initial: T): [T, (v: T) => void] {
+function usePref<T>(key: string, initial: T): [T, (v: T | ((cur: T) => T)) => void] {
   const [v, setV] = useState<T>(() => {
     try {
       const s = localStorage.getItem(key)
@@ -18,80 +21,123 @@ function usePref<T>(key: string, initial: T): [T, (v: T) => void] {
       return initial
     }
   })
-  return [
-    v,
-    (next: T) => {
-      setV(next)
-      try {
-        localStorage.setItem(key, JSON.stringify(next))
-      } catch {}
-    },
-  ]
+  const set = useCallback(
+    (next: T | ((cur: T) => T)) =>
+      setV((cur) => {
+        const value = typeof next === 'function' ? (next as (c: T) => T)(cur) : next
+        try {
+          localStorage.setItem(key, JSON.stringify(value))
+        } catch {}
+        return value
+      }),
+    [key],
+  )
+  return [v, set]
 }
 
-const STARTERS = [
-  { icon: 'web_search', text: "What's happening in the world today?" },
-  { icon: 'deep', text: 'Research the best budget laptops for programming right now', deep: true },
-  { icon: 'run_code', text: 'Plot compound growth of €10,000 at 7% for 20 years' },
-  { icon: 'create_task', text: 'Every weekday at 8:00, send me a short news brief' },
-] as const
+const label = (b: Bot) => (b.role ? `${b.name} · ${b.role}` : b.name)
+
+interface SendOpts {
+  text?: string
+  files?: AttachmentMeta[]
+  replaceFrom?: number
+  regenerate?: boolean
+}
 
 export default function App() {
   const [conn, setConn] = useState<Connection>(loadConnection)
   const api = useMemo(() => new Api(conn), [conn])
   setFileResolver(api.fileUrl)
-  const [view, setView] = useState<View>(conn.token ? 'chat' : 'settings')
-  const [messages, setMessages] = useState<Message[]>([])
-  const [hasOlder, setHasOlder] = useState(false)
+  setAvatarFileResolver(api.fileUrl)
+
+  const [bots, setBots] = useState<Bot[]>([])
+  const [activeId, setActiveId] = usePref<number | null>('si.bot', null)
+  const [page, setPage] = useState<Page | null>(conn.token ? null : 'settings')
+  const [panelOpen, setPanelOpen] = usePref('si.panel', window.innerWidth > 1100)
+  const [read, setRead] = usePref<Record<string, number>>('si.read', {})
+  const [me, setMe] = usePref('si.me', '')
   const [models, setModels] = useState<ModelOption[]>([])
-  const [model, setModel] = usePref<string>('si.model', '')
+  const [defaultModel, setDefaultModel] = useState('')
+  const [timelines, setTimelines] = useState<Record<number, Message[]>>({})
+  const [hasOlder, setHasOlder] = useState<Record<number, boolean>>({})
   const [think, setThink] = usePref('si.think', false)
   const [deep, setDeep] = usePref('si.deep', false)
-  const [live, setLive] = useState<LiveReply | null>(null)
-  const [suggestions, setSuggestions] = useState<string[]>([])
+  const [live, setLive] = useState<{ botId: number; reply: LiveReply } | null>(null)
+  const [suggestions, setSuggestions] = useState<{ botId: number; list: string[] } | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [prefill, setPrefill] = useState<{ text: string; n: number }>()
+  const [error, setError] = useState<{ botId: number; text: string } | null>(null)
+  const [newBot, setNewBot] = useState(false)
+  const [version, setVersion] = useState(0)
   const abort = useRef<AbortController | null>(null)
 
-  const refresh = useCallback(async () => {
-    if (!conn.token) return
-    try {
-      const [m, ms, ts] = await Promise.all([api.models(), api.messages(), api.tasks()])
-      setModels(m.models)
-      if (!model || !m.models.some((x) => x.id === model)) setModel(m.default ?? m.models[0]?.id ?? '')
-      setMessages(ms.messages)
-      setHasOlder(ms.messages.length === 100)
-      setTasks(ts.tasks)
-      setError(null)
-    } catch (e: any) {
-      setError(e.message === 'Failed to fetch' ? `Can't reach ${conn.url}` : e.message)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [api, conn])
+  const bot = bots.find((b) => b.id === activeId) ?? bots[0]
+  const messages = (bot && timelines[bot.id]) ?? []
+
+  const refreshBots = useCallback(async () => {
+    const r = await api.bots()
+    setBots(r.bots)
+    return r.bots
+  }, [api])
 
   useEffect(() => {
-    refresh()
-  }, [refresh])
+    if (!conn.token) return
+    Promise.all([refreshBots(), api.models(), api.tasks()])
+      .then(([, m, t]) => {
+        setModels(m.models)
+        setDefaultModel(m.default ?? '')
+        setTasks(t.tasks)
+        setError(null)
+      })
+      .catch((e) => setError({ botId: 0, text: e.message === 'Failed to fetch' ? `Can't reach ${conn.url}` : e.message }))
+  }, [api, conn, refreshBots])
 
-  // Scheduled tasks post into the timeline while the app is idle: poll for new messages.
+  // Load a bot's timeline the first time it is opened.
+  useEffect(() => {
+    if (!bot || timelines[bot.id]) return
+    api.messages(bot.id).then(
+      (r) => {
+        setTimelines((t) => ({ ...t, [bot.id]: r.messages }))
+        setHasOlder((h) => ({ ...h, [bot.id]: r.messages.length === 100 }))
+      },
+      () => {},
+    )
+  }, [api, bot, timelines])
+
+  // Opening a bot marks it read.
   const lastId = messages.at(-1)?.id ?? 0
   useEffect(() => {
-    if (!conn.token || live) return
+    if (bot && !page && lastId && (read[bot.id] ?? 0) < lastId) setRead((r) => ({ ...r, [bot.id]: lastId }))
+  }, [bot, page, lastId, read, setRead])
+
+  // Other bots keep working (tasks, messages from bots): poll the sidebar and the open timeline.
+  useEffect(() => {
+    if (!conn.token) return
     const timer = setInterval(async () => {
       try {
-        const { messages: fresh } = await api.newer(lastId)
-        if (!fresh.length) return
-        setMessages((m) => [...m, ...fresh.filter((f) => !m.some((x) => x.id === f.id))])
-        const fromTask = fresh.find((f) => f.taskId)
-        if (fromTask && document.hidden && 'Notification' in window && Notification.permission === 'granted') {
-          new Notification('Si', { body: fromTask.content.replace(/[*#_`]/g, '').slice(0, 140) })
+        const fresh = await refreshBots()
+        if (bot && !live) {
+          const newest = fresh.find((b) => b.id === bot.id)?.lastMessage?.id ?? 0
+          if (newest > lastId) {
+            const { messages: more } = await api.newer(bot.id, lastId)
+            setTimelines((t) => ({ ...t, [bot.id]: [...(t[bot.id] ?? []), ...more.filter((m) => !(t[bot.id] ?? []).some((x) => x.id === m.id))] }))
+            setVersion((v) => v + 1)
+          }
         }
-        api.tasks().then((r) => setTasks(r.tasks), () => {})
+        // Notify about new task results in other bots while the window is hidden.
+        if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
+          for (const b of fresh) {
+            const lm = b.lastMessage
+            if (lm && lm.role === 'assistant' && lm.id > (read[b.id] ?? 0) && lm.id > (notified.current[b.id] ?? 0)) {
+              notified.current[b.id] = lm.id
+              new Notification(label(b), { body: lm.preview })
+            }
+          }
+        }
       } catch {}
-    }, 15_000)
+    }, 12_000)
     return () => clearInterval(timer)
-  }, [api, conn.token, live, lastId])
+  }, [api, conn.token, bot, live, lastId, refreshBots, read])
+  const notified = useRef<Record<number, number>>({})
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -101,200 +147,251 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
-  async function loadOlder() {
-    const first = messages[0]?.id
-    if (!first) return
-    const { messages: older } = await api.messages(first)
-    setMessages((m) => [...older, ...m])
-    setHasOlder(older.length === 100)
-  }
+  const setTimeline = (id: number, fn: (m: Message[]) => Message[]) => setTimelines((t) => ({ ...t, [id]: fn(t[id] ?? []) }))
 
-  async function send(opts: { text?: string; files?: AttachmentMeta[]; replaceFrom?: number; regenerate?: boolean; deepOverride?: boolean }) {
+  async function send(target: Bot, opts: SendOpts) {
+    const id = target.id
     setError(null)
-    setSuggestions([])
-    if (opts.replaceFrom) setMessages((m) => m.filter((x) => x.id < opts.replaceFrom!))
+    setSuggestions(null)
+    if (opts.replaceFrom) setTimeline(id, (m) => m.filter((x) => x.id < opts.replaceFrom!))
     if (opts.regenerate) {
-      const lastUser = [...messages].reverse().find((m) => m.role === 'user')
-      if (lastUser) setMessages((m) => m.filter((x) => x.id <= lastUser.id))
+      const lastUser = [...(timelines[id] ?? [])].reverse().find((m) => m.role === 'user' && !m.fromBotId)
+      if (lastUser) setTimeline(id, (m) => m.filter((x) => x.id <= lastUser.id))
     }
-    setLive({ text: '', reasoning: '', reasoningDone: false, steps: [], sources: [], startedAt: Date.now() })
+    const update = (fn: (r: LiveReply) => LiveReply) => setLive((l) => (l && l.botId === id ? { botId: id, reply: fn(l.reply) } : l))
+    setLive({ botId: id, reply: { text: '', reasoning: '', reasoningDone: false, steps: [], sources: [], startedAt: Date.now() } })
     const ctrl = new AbortController()
     abort.current = ctrl
-    if (tasks.length === 0 && /remind|every (day|week|morning)|schedule/i.test(opts.text ?? '') && 'Notification' in window) {
+    if (/remind|every (day|week|morning)|schedule/i.test(opts.text ?? '') && 'Notification' in window) {
       Notification.requestPermission().catch(() => {})
     }
     try {
       await api.chat(
         {
+          botId: id,
           content: opts.text ?? '',
-          model: model || undefined,
           think,
-          deep: opts.deepOverride ?? deep,
+          deep,
           timezone: TZ,
           attachments: opts.files?.map((f) => f.id),
           replaceFrom: opts.replaceFrom,
           regenerate: opts.regenerate,
         },
         (e) => {
-          if (e.type === 'user') setMessages((m) => [...m.filter((x) => x.id !== e.message.id), e.message])
-          else if (e.type === 'reasoning') setLive((s) => s && { ...s, reasoning: s.reasoning + e.text })
-          else if (e.type === 'delta') setLive((s) => s && { ...s, text: s.text + e.text, reasoningDone: true })
+          if (e.type === 'user') setTimeline(id, (m) => [...m.filter((x) => x.id !== e.message.id), e.message])
+          else if (e.type === 'reasoning') update((r) => ({ ...r, reasoning: r.reasoning + e.text }))
+          else if (e.type === 'delta') update((r) => ({ ...r, text: r.text + e.text, reasoningDone: true }))
           else if (e.type === 'retract')
-            setLive((s) => s && { ...s, text: s.text.slice(0, e.from), reasoning: [s.reasoning, s.text.slice(e.from).trim()].filter(Boolean).join('\n\n') })
-          else if (e.type === 'tool-call') setLive((s) => s && { ...s, reasoningDone: true, steps: [...s.steps, e.step] })
+            update((r) => ({
+              ...r,
+              text: r.text.slice(0, e.from),
+              reasoning: [r.reasoning, r.text.slice(e.from).trim()].filter(Boolean).join('\n\n'),
+            }))
+          else if (e.type === 'tool-call') update((r) => ({ ...r, reasoningDone: true, steps: [...r.steps, e.step] }))
           else if (e.type === 'tool-result')
-            setLive(
-              (s) => s && { ...s, steps: s.steps.map((st) => (st.id === e.id ? { ...st, output: e.output, error: e.error } : st)) },
-            )
-          else if (e.type === 'sources') setLive((s) => s && { ...s, sources: e.sources })
+            update((r) => ({ ...r, steps: r.steps.map((s) => (s.id === e.id ? { ...s, output: e.output, error: e.error } : s)) }))
+          else if (e.type === 'sources') update((r) => ({ ...r, sources: e.sources }))
           else if (e.type === 'done') {
-            setMessages((m) => [...m, e.message])
+            setTimeline(id, (m) => [...m, e.message])
             setLive(null)
-            if (e.message.steps?.some((s) => s.name === 'create_task' || s.name === 'cancel_task'))
+            setVersion((v) => v + 1)
+            if (e.message.steps?.some((s) => ['create_task', 'cancel_task', 'message_bot'].includes(s.name))) {
               api.tasks().then((r) => setTasks(r.tasks), () => {})
-          } else if (e.type === 'suggestions') setSuggestions(e.suggestions)
-          else if (e.type === 'error') setError(e.error)
+              // Another bot's timeline changed: drop its cache so it reloads when opened.
+              const others = e.message.steps.filter((s) => s.name === 'message_bot').map((s) => (s.input as any)?.bot?.toLowerCase())
+              setTimelines((t) => {
+                const copy = { ...t }
+                for (const b of bots) if (others.includes(b.name.toLowerCase())) delete copy[b.id]
+                return copy
+              })
+            }
+            refreshBots().catch(() => {})
+          } else if (e.type === 'suggestions') setSuggestions({ botId: id, list: e.suggestions })
+          else if (e.type === 'error') setError({ botId: id, text: e.error })
         },
         ctrl.signal,
       )
     } catch (e: any) {
-      if (e.name !== 'AbortError') setError(e.message === 'Failed to fetch' ? `Lost connection to ${conn.url}` : e.message)
+      if (e.name !== 'AbortError') setError({ botId: id, text: e.message === 'Failed to fetch' ? `Lost connection to ${conn.url}` : e.message })
       else {
-        // The server saves what it had; pick it up.
-        setTimeout(() => api.newer(lastIdRef.current).then((r) => setMessages((m) => [...m, ...r.messages.filter((f) => !m.some((x) => x.id === f.id))]), () => {}), 800)
+        // The server keeps the partial reply; pick it up.
+        setTimeout(async () => {
+          const after = (timelinesRef.current[id] ?? []).at(-1)?.id ?? 0
+          const r = await api.newer(id, after).catch(() => null)
+          if (r) setTimeline(id, (m) => [...m, ...r.messages.filter((f) => !m.some((x) => x.id === f.id))])
+        }, 800)
       }
     } finally {
-      setLive(null)
+      setLive((l) => (l?.botId === id ? null : l))
       abort.current = null
     }
   }
-  const lastIdRef = useRef(0)
-  lastIdRef.current = lastId
+  const timelinesRef = useRef(timelines)
+  timelinesRef.current = timelines
 
-  const taskTitles = useMemo(() => new Map(tasks.map((t) => [t.id, t.title])), [tasks])
+  const unread = (b: Bot) => {
+    const lm = b.lastMessage
+    if (!lm || lm.role !== 'assistant') return false
+    if (b.id === bot?.id && !page) return false
+    return lm.id > (read[b.id] ?? 0)
+  }
+
+  const working = useMemo(() => new Set(live ? [live.botId] : []), [live])
   const modelLabels = useMemo(() => new Map(models.map((m) => [m.id, m.label.replace(/\s*\(.*\)$/, '')])), [models])
+  const taskTitles = useMemo(() => new Map(tasks.map((t) => [t.id, t.title])), [tasks])
 
   return (
-    <div className="app">
-      <nav className="rail">
-        <div className="logo" title="Si">
-          <img src="/si.svg" alt="Si" />
-        </div>
-        {(['chat', 'search', 'tasks', 'memory', 'settings'] as View[]).map((v) => (
-          <button key={v} className={`rail-btn ${view === v ? 'active' : ''}`} onClick={() => setView(v)} title={v}>
-            {Icon[v]}
-            <span>{v[0].toUpperCase() + v.slice(1)}</span>
-            {v === 'tasks' && tasks.filter((t) => t.enabled).length > 0 && <i className="badge">{tasks.filter((t) => t.enabled).length}</i>}
-          </button>
-        ))}
-      </nav>
-      <main className="main">
-        {view === 'chat' && (
-          <ChatView
+    <BotsContext.Provider value={bots}>
+      <div className={`app ${panelOpen && bot && !page ? 'with-panel' : ''}`}>
+        <Sidebar
+          bots={bots}
+          activeId={bot?.id ?? null}
+          page={page}
+          unread={unread}
+          working={working}
+          me={me}
+          onOpen={(id) => {
+            setActiveId(id)
+            setPage(null)
+          }}
+          onPage={(p) => setPage(page === p ? null : p)}
+          onNewBot={() => setNewBot(true)}
+        />
+        <main className="main">
+          {page === 'search' && (
+            <SearchView
+              api={api}
+              bots={bots}
+              onOpen={(id) => {
+                setActiveId(id)
+                setPage(null)
+              }}
+            />
+          )}
+          {page === 'tasks' && <TasksView api={api} bots={bots} tasks={tasks} setTasks={setTasks} />}
+          {page === 'memory' && <MemoryView api={api} />}
+          {page === 'settings' && (
+            <SettingsView
+              conn={conn}
+              me={me}
+              onSave={(c, name) => {
+                saveConnection(c)
+                setConn(c)
+                setMe(name)
+                setPage(null)
+              }}
+            />
+          )}
+          {!page && bot && (
+            <ChatView
+              key={bot.id}
+              api={api}
+              bot={bot}
+              messages={messages}
+              hasOlder={!!hasOlder[bot.id]}
+              onLoadOlder={async () => {
+                const first = messages[0]?.id
+                if (!first) return
+                const r = await api.messages(bot.id, first)
+                setTimeline(bot.id, (m) => [...r.messages, ...m])
+                setHasOlder((h) => ({ ...h, [bot.id]: r.messages.length === 100 }))
+              }}
+              live={live?.botId === bot.id ? live.reply : null}
+              otherBusy={!!live && live.botId !== bot.id}
+              error={error?.botId === bot.id || error?.botId === 0 ? error.text : null}
+              suggestions={suggestions?.botId === bot.id ? suggestions.list : []}
+              modelLabels={modelLabels}
+              taskTitles={taskTitles}
+              onSend={(o) => send(bot, o)}
+              onTogglePanel={() => setPanelOpen(!panelOpen)}
+              composer={{
+                placeholder: `Message ${bot.name}`,
+                think,
+                setThink,
+                deep,
+                setDeep,
+                onSend: (text, files) => send(bot, { text, files }),
+                onStop: () => abort.current?.abort(),
+                upload: async (f) => (await api.upload(f)).file,
+                busy: !!live,
+              }}
+            />
+          )}
+          {!page && !bot && conn.token && <div className="hero muted">Loading your bots…</div>}
+        </main>
+        {panelOpen && bot && !page && (
+          <BotPanel
             api={api}
-            messages={messages}
-            hasOlder={hasOlder}
-            onLoadOlder={loadOlder}
-            live={live}
-            error={error}
-            suggestions={suggestions}
-            taskTitles={taskTitles}
-            modelLabels={modelLabels}
-            onSend={send}
-            prefill={prefill}
-            setPrefill={setPrefill}
-            composer={{
-              models,
-              model,
-              setModel,
-              think,
-              setThink,
-              deep,
-              setDeep,
-              onSend: (text, files) => send({ text, files }),
-              onStop: () => abort.current?.abort(),
-              upload: async (f) => (await api.upload(f)).file,
-              busy: live !== null,
-              prefill,
+            bot={bot}
+            bots={bots}
+            models={models}
+            defaultModel={defaultModel}
+            version={version}
+            onSaved={setBots}
+            onDeleted={(list) => {
+              setBots(list)
+              setActiveId(list[0]?.id ?? null)
+            }}
+            onClose={() => setPanelOpen(false)}
+          />
+        )}
+        {newBot && (
+          <NewBotDialog
+            api={api}
+            bots={bots}
+            onClose={() => setNewBot(false)}
+            onCreated={(b, list) => {
+              setBots(list)
+              setActiveId(b.id)
+              setPage(null)
+              setNewBot(false)
             }}
           />
         )}
-        {view === 'search' && <SearchView api={api} />}
-        {view === 'tasks' && <TasksView api={api} tasks={tasks} setTasks={setTasks} />}
-        {view === 'memory' && <MemoryView api={api} />}
-        {view === 'settings' && (
-          <SettingsView
-            conn={conn}
-            onSave={(c) => {
-              saveConnection(c)
-              setConn(c)
-              setView('chat')
-            }}
-          />
-        )}
-      </main>
-    </div>
+      </div>
+    </BotsContext.Provider>
   )
+}
+
+const STARTERS: Record<string, string[]> = {
+  default: ["What's happening in the world today?", 'Plot compound growth of €10,000 at 7% for 20 years', 'Every weekday at 8:00, send me a short news brief'],
 }
 
 function ChatView(props: {
   api: Api
+  bot: Bot
   messages: Message[]
   hasOlder: boolean
   onLoadOlder: () => Promise<void>
   live: LiveReply | null
+  otherBusy: boolean
   error: string | null
   suggestions: string[]
-  taskTitles: Map<number, string>
   modelLabels: Map<string, string>
-  onSend: (opts: { text?: string; files?: AttachmentMeta[]; replaceFrom?: number; regenerate?: boolean; deepOverride?: boolean }) => void
-  prefill?: { text: string; n: number }
-  setPrefill: (p: { text: string; n: number }) => void
+  taskTitles: Map<number, string>
+  onSend: (opts: SendOpts) => void
+  onTogglePanel: () => void
   composer: React.ComponentProps<typeof Composer>
 }) {
-  const { messages, live } = props
+  const { messages, live, bot } = props
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
   const [showJump, setShowJump] = useState(false)
-  const empty = messages.length === 0 && live === null
-  const lastUser = [...messages].reverse().find((m) => m.role === 'user')
+  const lastUser = [...messages].reverse().find((m) => m.role === 'user' && !m.fromBotId)
   const lastAssistant = messages.at(-1)?.role === 'assistant' ? messages.at(-1) : undefined
-  const fileUrl = props.api.fileUrl
+  const busy = !!live
 
-  // Follow the reply as it streams, unless the user has scrolled up to read.
   useLayoutEffect(() => {
     const el = scroller.current
     if (el && pinned.current) el.scrollTop = el.scrollHeight
   }, [messages, live, props.suggestions])
 
-  useEffect(() => {
-    pinned.current = true
-  }, [messages.length === 0])
-
-  const composer = <Composer {...props.composer} />
-
-  if (empty) {
-    return (
-      <div className="hero">
-        <img className="hero-logo" src="/si.svg" alt="" />
-        <h1 className="wordmark">Si</h1>
-        <p className="tagline">Your assistant. One mind, always on.</p>
-        {composer}
-        <div className="starters">
-          {STARTERS.map((s) => (
-            <button key={s.text} className="starter" onClick={() => props.onSend({ text: s.text, deepOverride: 'deep' in s ? s.deep : undefined })}>
-              {Icon[s.icon]}
-              <span>{s.text}</span>
-            </button>
-          ))}
-        </div>
-        {props.error && <div className="error">{props.error}</div>}
-      </div>
-    )
-  }
-
   return (
     <div className="chat">
+      <button className="bot-pill" onClick={props.onTogglePanel} title="Show details">
+        <Avatar avatar={bot.avatar} name={bot.name} size={26} />
+        {label(bot)}
+      </button>
       <div
         className="scroll"
         ref={scroller}
@@ -306,6 +403,21 @@ function ChatView(props: {
         }}
       >
         <div className="thread">
+          {messages.length === 0 && !live && (
+            <div className="bot-intro">
+              <Avatar avatar={bot.avatar} name={bot.name} size={88} />
+              <h2>{label(bot)}</h2>
+              <p className="muted">{bot.instructions ? bot.instructions.split(/(?<=\.)\s/)[0] : 'Your general assistant. One timeline, always remembering.'}</p>
+              <div className="starters">
+                {STARTERS.default.map((s) => (
+                  <button key={s} className="starter" onClick={() => props.onSend({ text: s })}>
+                    {Icon.spark}
+                    <span>{s}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {props.hasOlder && (
             <button className="link-btn older" onClick={props.onLoadOlder}>
               Load earlier messages
@@ -313,27 +425,22 @@ function ChatView(props: {
           )}
           {messages.map((m, i) => {
             const prev = messages[i - 1]
-            const day = new Date(m.createdAt).toDateString()
-            const divider = !prev || new Date(prev.createdAt).toDateString() !== day
+            const gap = !prev || new Date(m.createdAt).getTime() - new Date(prev.createdAt).getTime() > 3 * 3600_000
             return (
               <div key={m.id} className="entry">
-                {divider && <DayDivider iso={m.createdAt} />}
+                {gap && <DayDivider iso={m.createdAt} />}
                 {m.role === 'user' ? (
                   <UserMessage
                     message={m}
-                    fileUrl={fileUrl}
-                    onEdit={
-                      !live && m.id === lastUser?.id
-                        ? (text) => props.onSend({ text, files: m.attachments, replaceFrom: m.id })
-                        : undefined
-                    }
+                    fileUrl={props.api.fileUrl}
+                    onEdit={!busy && m.id === lastUser?.id ? (text) => props.onSend({ text, files: m.attachments, replaceFrom: m.id }) : undefined}
                   />
                 ) : (
                   <AssistantMessage
                     message={m}
                     modelLabel={m.model ? (props.modelLabels.get(m.model) ?? m.model.split(':')[1]) : undefined}
                     taskTitle={m.taskId ? (props.taskTitles.get(m.taskId) ?? 'task') : undefined}
-                    onRegenerate={!live && m.id === lastAssistant?.id && !m.taskId ? () => props.onSend({ regenerate: true }) : undefined}
+                    onRegenerate={!busy && m.id === lastAssistant?.id && !m.taskId ? () => props.onSend({ regenerate: true }) : undefined}
                   />
                 )}
               </div>
@@ -375,331 +482,96 @@ function ChatView(props: {
             {Icon.down}
           </button>
         )}
-        {composer}
+        {props.otherBusy && <div className="dock-note">Another bot is answering; you can send once it's done.</div>}
+        <Composer {...props.composer} />
       </div>
     </div>
   )
 }
 
-function DayDivider({ iso }: { iso: string }) {
-  const d = new Date(iso)
-  const today = new Date()
-  const yesterday = new Date(Date.now() - 86_400_000)
-  const label =
-    d.toDateString() === today.toDateString()
-      ? 'Today'
-      : d.toDateString() === yesterday.toDateString()
-        ? 'Yesterday'
-        : d.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })
-  return <div className="day">{label}</div>
-}
+const TEMPLATES = [
+  { name: 'Researcher', role: 'Deep research', instructions: 'Research thoroughly with many sources, cross-check, and cite every key claim.' },
+  { name: 'Coach', role: 'Fitness coach', instructions: 'Plan workouts and habits, track progress in your notebook, and check in kindly.' },
+  { name: 'Ledger', role: 'Finance helper', instructions: 'Help with budgets, invoices and numbers. Always compute with run_code; never estimate.' },
+  { name: 'Scout', role: 'Load finder', instructions: 'Find freight opportunities, rates and brokers for European road transport. Be specific and numeric.' },
+]
 
-type Repeat = 'once' | 'daily' | 'weekdays' | 'weekly' | 'cron'
-
-function describeSchedule(t: Task) {
-  if (!t.cron) return t.runAt ? `Once · ${new Date(t.runAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : 'Once'
-  const m = t.cron.match(/^(\d+) (\d+) \* \* (\*|1-5|\d)$/)
-  if (m) {
-    const at = `${m[2].padStart(2, '0')}:${m[1].padStart(2, '0')}`
-    if (m[3] === '*') return `Every day at ${at}`
-    if (m[3] === '1-5') return `Weekdays at ${at}`
-    const day = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][Number(m[3]) % 7]
-    return `Every ${day} at ${at}`
-  }
-  return `Cron ${t.cron}`
-}
-
-function TasksView({ api, tasks, setTasks }: { api: Api; tasks: Task[]; setTasks: (t: Task[]) => void }) {
-  const [title, setTitle] = useState('')
-  const [prompt, setPrompt] = useState('')
-  const [repeat, setRepeat] = useState<Repeat>('daily')
-  const [time, setTime] = useState('08:00')
-  const [date, setDate] = useState(() => new Date(Date.now() + 3600_000).toISOString().slice(0, 10))
-  const [weekday, setWeekday] = useState('1')
-  const [cron, setCron] = useState('0 8 * * *')
+function NewBotDialog(props: { api: Api; bots: Bot[]; onClose: () => void; onCreated: (b: Bot, list: Bot[]) => void }) {
+  const [name, setName] = useState('')
+  const [role, setRole] = useState('')
+  const [team, setTeam] = useState('')
+  const [instructions, setInstructions] = useState('')
+  const [avatar, setAvatar] = useState(() => randomAvatar('new'))
   const [error, setError] = useState<string | null>(null)
-  const [ran, setRan] = useState<number | null>(null)
-
-  useEffect(() => {
-    api.tasks().then((r) => setTasks(r.tasks), (e) => setError(e.message))
-  }, [api, setTasks])
-
-  async function add(e: React.FormEvent) {
-    e.preventDefault()
-    setError(null)
-    const [hh, mm] = time.split(':').map(Number)
-    const schedule =
-      repeat === 'once'
-        ? { runAt: new Date(`${date}T${time}`).toISOString() }
-        : { cron: repeat === 'cron' ? cron : `${mm} ${hh} * * ${repeat === 'daily' ? '*' : repeat === 'weekdays' ? '1-5' : weekday}` }
-    try {
-      setTasks((await api.addTask({ title: title.trim(), prompt: prompt.trim(), timezone: TZ, ...schedule })).tasks)
-      setTitle('')
-      setPrompt('')
-    } catch (err: any) {
-      setError(err.message)
-    }
-  }
+  const teams = [...new Set(props.bots.map((b) => b.team).filter(Boolean))] as string[]
 
   return (
-    <div className="page">
-      <h2>Tasks</h2>
-      <p className="muted">
-        Things Si does on its own: reminders, daily briefs, keeping an eye on news or prices. Results land in your chat.
-        You can also just ask in chat, like "every morning at 8, summarise the news".
-      </p>
-      <ul className="task-list">
-        {tasks.map((t) => (
-          <li key={t.id} className={t.enabled ? '' : 'off'}>
-            <div className="task-main">
-              <div className="task-title">{t.title}</div>
-              <div className="task-meta">
-                {describeSchedule(t)}
-                {t.cron && t.enabled && t.nextRunAt && ` · next ${new Date(t.nextRunAt).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })}`}
-                {!t.enabled && ' · paused'}
-              </div>
-              <div className="task-prompt">{t.prompt}</div>
-            </div>
-            <div className="task-actions">
-              <button
-                className="icon-btn"
-                title="Run now"
-                onClick={async () => {
-                  await api.runTask(t.id)
-                  setRan(t.id)
-                  setTimeout(() => setRan(null), 3000)
-                }}
-              >
-                {ran === t.id ? Icon.check : Icon.play}
-              </button>
-              {(t.cron || t.enabled) && (
-                <button
-                  className={`toggle ${t.enabled ? 'on' : ''}`}
-                  title={t.enabled ? 'Pause' : 'Resume'}
-                  onClick={async () => setTasks((await api.setTaskEnabled(t.id, !t.enabled)).tasks)}
-                >
-                  <span />
-                </button>
-              )}
-              <button className="icon-btn danger" title="Delete" onClick={async () => setTasks((await api.deleteTask(t.id)).tasks)}>
-                {Icon.trash}
-              </button>
-            </div>
-          </li>
-        ))}
-        {tasks.length === 0 && <li className="muted empty">No tasks yet.</li>}
-      </ul>
-
-      <h3>New task</h3>
-      <form className="task-form" onSubmit={add}>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Name, e.g. Morning brief" required />
-        <textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="What should Si do? e.g. Search today's top AI and tech news and give me the 5 biggest stories with links."
-          rows={3}
-          required
-        />
-        <div className="task-when">
-          <select value={repeat} onChange={(e) => setRepeat(e.target.value as Repeat)}>
-            <option value="once">Once</option>
-            <option value="daily">Every day</option>
-            <option value="weekdays">Weekdays</option>
-            <option value="weekly">Every week</option>
-            <option value="cron">Custom (cron)</option>
-          </select>
-          {repeat === 'once' && <input type="date" value={date} onChange={(e) => setDate(e.target.value)} />}
-          {repeat === 'weekly' && (
-            <select value={weekday} onChange={(e) => setWeekday(e.target.value)}>
-              {['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map((d, i) => (
-                <option key={d} value={i}>
-                  {d}
-                </option>
-              ))}
-            </select>
-          )}
-          {repeat === 'cron' ? (
-            <input value={cron} onChange={(e) => setCron(e.target.value)} placeholder="0 8 * * 1-5" />
-          ) : (
-            <input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
-          )}
-          <button className="primary">Schedule</button>
-        </div>
-      </form>
-      {error && <div className="error">{error}</div>}
-    </div>
-  )
-}
-
-/** Markdown syntax reads as noise in a two-line snippet. */
-function plainSnippet(s: string) {
-  return s
-    .replace(/\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?/g, ' ')
-    .replace(/[*`#]+/g, '')
-    .replace(/\s*\|\s*/g, ' · ')
-    .replace(/(\s·)+/g, ' ·')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-function SearchView({ api }: { api: Api }) {
-  const [q, setQ] = useState('')
-  const [results, setResults] = useState<(Message & { snippet: string })[] | null>(null)
-  const [open, setOpen] = useState<number | null>(null)
-  useEffect(() => {
-    if (!q.trim()) return setResults(null)
-    const t = setTimeout(() => api.search(q).then((r) => setResults(r.messages), () => setResults([])), 250)
-    return () => clearTimeout(t)
-  }, [api, q])
-  return (
-    <div className="page">
-      <h2>Search</h2>
-      <p className="muted">Everything you and Si have ever said, in one timeline.</p>
-      <input className="search-input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search your conversation…" autoFocus />
-      {results && (
-        <ul className="results">
-          {results.map((m) => (
-            <li key={m.id} onClick={() => setOpen(open === m.id ? null : m.id)}>
-              <div className="result-meta">
-                {m.role === 'user' ? 'You' : 'Si'} · {new Date(m.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
-              </div>
-              {open === m.id ? (
-                <div className="msg assistant">
-                  <Markdown text={m.content} />
-                </div>
-              ) : (
-                <div className="result-snippet">
-                  {plainSnippet(m.snippet).split(/(<<.*?>>)/g).map((part, i) =>
-                    part.startsWith('<<') ? <mark key={i}>{part.slice(2, -2)}</mark> : <span key={i}>{part}</span>,
-                  )}
-                </div>
-              )}
-            </li>
-          ))}
-          {results.length === 0 && <li className="muted">No matches.</li>}
-        </ul>
-      )}
-    </div>
-  )
-}
-
-function MemoryView({ api }: { api: Api }) {
-  const [facts, setFacts] = useState<Fact[]>([])
-  const [text, setText] = useState('')
-  const [filter, setFilter] = useState('')
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    api.facts().then((r) => setFacts(r.facts), (e) => setError(e.message))
-  }, [api])
-
-  const shown = facts.filter((f) => f.text.toLowerCase().includes(filter.toLowerCase()))
-  return (
-    <div className="page">
-      <h2>Memory</h2>
-      <p className="muted">
-        Si never starts over. Recent messages are read word for word; everything older lives in its notebook, a running
-        digest of your timeline, the facts below, and search over every message. All of it is yours to read and edit.
-      </p>
-      <ContextEditors api={api} />
-      <h3>Facts</h3>
+    <div className="modal-back" onClick={props.onClose}>
       <form
-        className="add-fact"
+        className="modal"
+        onClick={(e) => e.stopPropagation()}
         onSubmit={async (e) => {
           e.preventDefault()
-          if (!text.trim()) return
-          setFacts((await api.addFact(text)).facts)
-          setText('')
+          try {
+            const r = await props.api.createBot({ name, role, team: team || null, instructions, avatar })
+            props.onCreated(r.bot, r.bots)
+          } catch (err: any) {
+            setError(err.message)
+          }
         }}
       >
-        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Teach Si something about you…" />
-        <button className="primary">Remember</button>
-      </form>
-      {facts.length > 8 && (
-        <input className="filter" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder={`Search ${facts.length} memories`} />
-      )}
-      {error && <div className="error">{error}</div>}
-      <ul className="facts">
-        {shown.map((f) => (
-          <li key={f.id}>
-            <span>{f.text}</span>
-            <button className="icon-btn danger" title="Forget" onClick={async () => setFacts((await api.deleteFact(f.id)).facts)}>
-              {Icon.trash}
+        <div className="modal-head">
+          <h3>New bot</h3>
+          <button type="button" className="round-btn" onClick={props.onClose}>
+            {Icon.close}
+          </button>
+        </div>
+        <div className="avatar-edit">
+          <Avatar avatar={avatar} name={name || 'bot'} size={64} />
+          <button type="button" className="ghost small" onClick={() => setAvatar(randomAvatar(name || 'bot'))}>
+            New look
+          </button>
+        </div>
+        <div className="templates">
+          {TEMPLATES.map((t) => (
+            <button
+              type="button"
+              key={t.name}
+              className="chip"
+              onClick={() => {
+                setName(t.name)
+                setRole(t.role)
+                setInstructions(t.instructions)
+                setAvatar(randomAvatar(t.name))
+              }}
+            >
+              {t.role}
             </button>
-          </li>
-        ))}
-        {facts.length === 0 && !error && <li className="muted">Nothing yet. Chat a little and Si will start remembering.</li>}
-      </ul>
-    </div>
-  )
-}
-
-function ContextEditors({ api }: { api: Api }) {
-  const [notes, setNotes] = useState<string | null>(null)
-  const [digest, setDigest] = useState<string | null>(null)
-  const [meta, setMeta] = useState<string>('')
-  const [saved, setSaved] = useState<'notes' | 'digest' | null>(null)
-  useEffect(() => {
-    api.context().then(
-      (r) => {
-        setNotes(r.notes)
-        setDigest(r.digest?.text ?? '')
-        setMeta(r.digest ? `updated ${new Date(r.digest.updatedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : '')
-      },
-      () => {},
-    )
-  }, [api])
-  if (notes === null) return null
-  const save = async (which: 'notes' | 'digest') => {
-    await api.saveContext(which === 'notes' ? { notes: notes ?? '' } : { digest: digest ?? '' })
-    setSaved(which)
-    setTimeout(() => setSaved(null), 1500)
-  }
-  return (
-    <div className="context-editors">
-      <details className="context-card" open={!!notes}>
-        <summary>
-          <span>Notebook</span>
-          <span className="muted small">What Si is tracking right now: projects, open loops, promises</span>
-        </summary>
-        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={8} placeholder="Si fills this in as it learns what you're working on." />
-        <button className="ghost" onClick={() => save('notes')}>{saved === 'notes' ? 'Saved' : 'Save notebook'}</button>
-      </details>
-      <details className="context-card">
-        <summary>
-          <span>Timeline digest</span>
-          <span className="muted small">{digest ? `Si's summary of older conversation, ${meta}` : 'Starts once your timeline outgrows the recent window'}</span>
-        </summary>
-        <textarea value={digest ?? ''} onChange={(e) => setDigest(e.target.value)} rows={14} />
-        <button className="ghost" onClick={() => save('digest')}>{saved === 'digest' ? 'Saved' : 'Save digest'}</button>
-      </details>
-    </div>
-  )
-}
-
-function SettingsView({ conn, onSave }: { conn: Connection; onSave: (c: Connection) => void }) {
-  const [url, setUrl] = useState(conn.url)
-  const [token, setToken] = useState(conn.token)
-  return (
-    <div className="page">
-      <h2>Connect to your Si server</h2>
-      <p className="muted">Use http://localhost:8787 while testing locally, or your VPS domain once deployed.</p>
-      <form
-        className="settings"
-        onSubmit={(e) => {
-          e.preventDefault()
-          onSave({ url: url.trim(), token: token.trim() })
-        }}
-      >
+          ))}
+        </div>
         <label>
-          Server URL
-          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://si.example.com" />
+          Name
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Raider" required autoFocus />
         </label>
         <label>
-          Access token
-          <input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder="SIBOT_TOKEN from .env" />
+          Role
+          <input value={role} onChange={(e) => setRole(e.target.value)} placeholder="e.g. Live X hunt" />
         </label>
-        <button className="primary">Connect</button>
+        <label>
+          Team
+          <input list="new-teams" value={team} onChange={(e) => setTeam(e.target.value)} placeholder="Unassigned" />
+          <datalist id="new-teams">
+            {teams.map((t) => (
+              <option key={t} value={t} />
+            ))}
+          </datalist>
+        </label>
+        <label>
+          Instructions
+          <textarea rows={4} value={instructions} onChange={(e) => setInstructions(e.target.value)} placeholder="What it does, how it talks, what to focus on" />
+        </label>
+        {error && <div className="error">{error}</div>}
+        <button className="primary">Create bot</button>
       </form>
     </div>
   )

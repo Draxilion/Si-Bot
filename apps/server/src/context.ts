@@ -38,13 +38,17 @@ export interface WindowRow {
 }
 
 /** The newest messages up to and including `upToId` that fit the token budget, oldest first. */
-export async function recentWindow(upToId: number, budget = CONTEXT_TOKENS): Promise<WindowRow[]> {
+export async function recentWindow(botId: number, upToId: number, budget = CONTEXT_TOKENS): Promise<WindowRow[]> {
   const rows = await sql`
-    select id, role, content from messages where id <= ${upToId} order by id desc limit ${MAX_MESSAGES}`
+    select m.id, m.role, m.content, fb.name as from_name
+    from messages m left join bots fb on fb.id = m.from_bot_id
+    where m.bot_id = ${botId} and m.id <= ${upToId}
+    order by m.id desc limit ${MAX_MESSAGES}`
   const out: WindowRow[] = []
   let used = 0
   for (const [i, r] of rows.entries()) {
-    const content = i < KEEP_FULL ? r.content : clipMiddle(r.content, OLD_REPLY_CHARS)
+    const raw = r.from_name ? `[Message from ${r.from_name}, another bot] ${r.content}` : r.content
+    const content = i < KEEP_FULL ? raw : clipMiddle(raw, OLD_REPLY_CHARS)
     const cost = tokens(content) + 4
     // Always keep the newest exchange, even if it alone is over budget.
     if (used + cost > budget && out.length >= 2) break
@@ -63,13 +67,13 @@ interface Digest {
   updatedAt: string
 }
 
-export async function getDigest(): Promise<Digest | null> {
-  return getSetting<Digest | null>('digest', null)
+export async function getDigest(botId: number): Promise<Digest | null> {
+  return getSetting<Digest | null>(`digest:${botId}`, null)
 }
 
-export async function setDigestText(text: string) {
-  const cur = await getDigest()
-  await setSetting('digest', { text: text.trim(), upToId: cur?.upToId ?? 0, updatedAt: new Date().toISOString() })
+export async function setDigestText(botId: number, text: string) {
+  const cur = await getDigest(botId)
+  await setSetting(`digest:${botId}`, { text: text.trim(), upToId: cur?.upToId ?? 0, updatedAt: new Date().toISOString() })
 }
 
 function helperModelId(): string | undefined {
@@ -79,26 +83,26 @@ function helperModelId(): string | undefined {
   return models[0]?.id
 }
 
-let digesting = false
+const digesting = new Set<number>()
 
 /**
  * Folds messages that have left the recent window into the rolling digest. Runs in the background after each
  * reply; does nothing until enough has fallen out of the window to be worth a model call.
  */
-export async function updateDigest(force = false) {
-  if (digesting) return
+export async function updateDigest(botId: number, force = false) {
+  if (digesting.has(botId)) return
   const modelId = helperModelId()
   if (!modelId) return
-  digesting = true
+  digesting.add(botId)
   try {
-    const [last] = await sql`select coalesce(max(id), 0) as id from messages`
-    const window = await recentWindow(Number(last.id))
+    const [last] = await sql`select coalesce(max(id), 0) as id from messages where bot_id = ${botId}`
+    const window = await recentWindow(botId, Number(last.id))
     const windowStart = window[0]?.id ?? Number(last.id) + 1
-    const digest = await getDigest()
+    const digest = await getDigest(botId)
     const from = digest?.upToId ?? 0
     const pending = await sql`
       select id, role, content, created_at from messages
-      where id > ${from} and id < ${windowStart} order by id limit 200`
+      where bot_id = ${botId} and id > ${from} and id < ${windowStart} order by id limit 200`
     if (!pending.length) return
     const pendingChars = pending.reduce((n, r) => n + r.content.length, 0)
     if (!force && pending.length < 8 && pendingChars < 12_000) return
@@ -110,7 +114,7 @@ export async function updateDigest(force = false) {
       model: getModel(modelId),
       maxOutputTokens: 3_000,
       system:
-        'You maintain the running digest of a personal assistant\'s single, lifelong conversation with its user. ' +
+        'You maintain the running digest of an assistant\'s single, lifelong conversation with its user. ' +
         'Merge the new messages into the existing digest and return the full updated digest. Keep: who the user is, ' +
         'their projects, decisions and why, preferences, promises either side made, open questions, and concrete ' +
         'details likely to matter later (names, numbers, dates, places, IDs). Drop small talk and anything the assistant ' +
@@ -119,31 +123,31 @@ export async function updateDigest(force = false) {
         'rather than dropping recent detail. Output only the digest.',
       prompt: `Existing digest:\n${digest?.text || '(empty)'}\n\nNew messages:\n${transcript}`,
     })
-    await setSetting('digest', {
+    await setSetting(`digest:${botId}`, {
       text: text.trim(),
       upToId: Number(pending.at(-1)!.id),
       updatedAt: new Date().toISOString(),
     })
-    console.log(`[context] digest now covers up to message ${pending.at(-1)!.id}`)
+    console.log(`[context] bot ${botId} digest now covers up to message ${pending.at(-1)!.id}`)
   } catch (err) {
     console.error('[context] digest update failed:', (err as Error).message)
   } finally {
-    digesting = false
+    digesting.delete(botId)
   }
 }
 
 // ---------- Notebook ----------
 
-export async function getNotes(): Promise<string> {
-  return getSetting<string>('notes', '')
+export async function getNotes(botId: number): Promise<string> {
+  return getSetting<string>(`notes:${botId}`, '')
 }
 
-export async function setNotes(text: string) {
-  await setSetting('notes', text.slice(0, NOTES_MAX_CHARS))
+export async function setNotes(botId: number, text: string) {
+  await setSetting(`notes:${botId}`, text.slice(0, NOTES_MAX_CHARS))
 }
 
 /** Lets Si keep its own notebook of what is going on in the user's life and work. */
-export function notebookTools() {
+export function notebookTools(botId: number) {
   return {
     update_notes: tool({
       description:
@@ -154,7 +158,7 @@ export function notebookTools() {
         `in markdown, under ${NOTES_MAX_CHARS} characters; remove what is done or stale.`,
       inputSchema: z.object({ notes: z.string() }),
       execute: async ({ notes }) => {
-        await setNotes(notes)
+        await setNotes(botId, notes)
         return { saved: true, chars: Math.min(notes.length, NOTES_MAX_CHARS) }
       },
     }),
@@ -162,8 +166,8 @@ export function notebookTools() {
 }
 
 /** The long-memory layers of the system prompt: notebook and digest. */
-export async function contextPrompt(): Promise<string> {
-  const [notes, digest] = await Promise.all([getNotes(), getDigest()])
+export async function contextPrompt(botId: number): Promise<string> {
+  const [notes, digest] = await Promise.all([getNotes(botId), getDigest(botId)])
   let out = ''
   if (notes.trim()) {
     out += `\n\nYour notebook (your own running notes; keep it current with update_notes):\n${notes.trim()}`

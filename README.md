@@ -1,9 +1,10 @@
 # Si-Bot
 
-A self-hosted, persistent AI assistant with a native app. One assistant, one continuous timeline, long-term memory, and a server that keeps working while the app is closed. Bring your own models: Claude, OpenAI, OpenRouter (Grok, Gemini, DeepSeek and more) or local models through Ollama.
+A self-hosted team of persistent AI bots with a native app. Each bot has its own continuous timeline, long-term memory, and a server that keeps working while the app is closed. Bring your own models: Claude, OpenAI, OpenRouter (Grok, Gemini, DeepSeek and more) or local models through Ollama.
 
 ## What works today
 
+- **A team of bots, Grok-style**: the left sidebar lists named bots with avatars and roles, pinned favourites as large avatars on top, the rest grouped by team, each with its last message, time and unread dot. Every bot has its own persistent timeline, notebook, digest, recall, tasks, model and instructions; facts about you are shared by all. A right panel per bot has **Details** (avatar, name, role, team, model, instructions, scheduled tasks, memory), **Library** (files shared with it and images it made) and **Computer** (every search, page read and code run). Bots can **message each other** (`message_bot`): the receiving bot answers in its own timeline and the reply comes back to the sender. A starter team (Si, Researchy, News, Hank, Quill, Nova) is created on first boot
 - **One persistent timeline** in Postgres: no sessions, no "new chat". Edit your last message, regenerate the last reply, stop mid-answer (the partial reply is kept)
 - **Models**: Anthropic, OpenAI, OpenRouter, OpenCode Go, Ollama. OpenCode Go and Ollama models are discovered at boot, so every model your key can use shows up (Grok 4.7, Kimi K3, Qwen 3.8, DeepSeek V4, GLM 5.3, Gemini…). `FALLBACK_MODEL` answers when the chosen model fails before replying
 - **Think**: reasoning streams live into a collapsible "Thinking" panel, on every provider that exposes it
@@ -60,12 +61,14 @@ All `/api/*` routes need `Authorization: Bearer $SIBOT_TOKEN`.
 | Route | Purpose |
 | --- | --- |
 | `GET /api/models` | Configured models and the default |
-| `GET /api/messages?before=<id>` | The timeline, 100 at a time |
-| `GET /api/messages?after=<id>` | Newer messages (the app polls this for task results) |
+| `GET/POST /api/bots`, `PATCH/DELETE /api/bots/:id` | Bots: name, role, avatar, team, pinned, model, instructions |
+| `GET /api/bots/:id/library`, `GET /api/bots/:id/activity` | A bot's files and its tool activity |
+| `GET /api/messages?bot=<id>&before=<id>` | A bot's timeline, 100 at a time |
+| `GET /api/messages?bot=<id>&after=<id>` | Newer messages (the app polls this for task results) |
 | `DELETE /api/messages/:id` | Delete one message |
-| `POST /api/chat` | `{content, model?, think?, deep?, timezone?, attachments?, replaceFrom?, regenerate?}`, streams server-sent events |
+| `POST /api/chat` | `{botId?, content, model?, think?, deep?, timezone?, attachments?, replaceFrom?, regenerate?}`, streams server-sent events |
 | `POST /api/files`, `GET /api/files/:id` | Upload (multipart `file`, 20 MB max) and fetch attachments |
 | `GET/POST /api/tasks`, `PATCH/DELETE /api/tasks/:id`, `POST /api/tasks/:id/run` | Scheduled tasks |
 | `GET/POST /api/memory`, `DELETE /api/memory/:id` | Long-term facts |
-| `GET/PUT /api/context` | Si's notebook and the timeline digest |
+| `GET/PUT /api/context?bot=<id>` | A bot's notebook and timeline digest |
 | `GET /api/search?q=` | Search the whole timeline |

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AttachmentMeta, ModelOption } from '@si-bot/shared'
+import type { AttachmentMeta } from '@si-bot/shared'
 import { Icon } from './icons'
 
 export interface Pending {
@@ -11,9 +11,7 @@ export interface Pending {
 }
 
 export interface ComposerProps {
-  models: ModelOption[]
-  model: string
-  setModel: (m: string) => void
+  placeholder?: string
   think: boolean
   setThink: (t: boolean) => void
   deep: boolean
@@ -26,7 +24,7 @@ export interface ComposerProps {
   prefill?: { text: string; n: number }
 }
 
-const PROVIDER_NAMES: Record<string, string> = {
+export const PROVIDER_NAMES: Record<string, string> = {
   anthropic: 'Anthropic',
   openai: 'OpenAI',
   openrouter: 'OpenRouter',
@@ -135,27 +133,7 @@ export function Composer(props: ComposerProps) {
           ))}
         </div>
       )}
-      <textarea
-        ref={ta}
-        rows={1}
-        value={text}
-        placeholder={listening ? 'Listening…' : props.deep ? 'What should I research?' : 'What do you want to know?'}
-        onChange={(e) => setText(e.target.value)}
-        onPaste={(e) => {
-          if (e.clipboardData.files.length) {
-            e.preventDefault()
-            addFiles(e.clipboardData.files)
-          }
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault()
-            submit()
-          }
-        }}
-        autoFocus
-      />
-      <div className="composer-row">
+      <div className="composer-line">
         <input
           ref={fileInput}
           type="file"
@@ -167,34 +145,39 @@ export function Composer(props: ComposerProps) {
             e.target.value = ''
           }}
         />
-        <button className="pill icon-only" title="Attach files" onClick={() => fileInput.current?.click()}>
-          {Icon.attach}
+        <button className="round-btn" title="Attach files" onClick={() => fileInput.current?.click()}>
+          {Icon.plus}
         </button>
-        <button className={`pill ${props.deep ? 'on' : ''}`} onClick={() => props.setDeep(!props.deep)} title="Thorough multi-source research">
+        <textarea
+          ref={ta}
+          rows={1}
+          value={text}
+          placeholder={listening ? 'Listening…' : props.deep ? 'What should I research?' : (props.placeholder ?? 'Message')}
+          onChange={(e) => setText(e.target.value)}
+          onPaste={(e) => {
+            if (e.clipboardData.files.length) {
+              e.preventDefault()
+              addFiles(e.clipboardData.files)
+            }
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault()
+              submit()
+            }
+          }}
+          autoFocus
+        />
+        <button className={`mode-btn ${props.deep ? 'on' : ''}`} onClick={() => props.setDeep(!props.deep)} title="DeepSearch: thorough multi-source research">
           {Icon.deep}
-          <span className="pill-text">DeepSearch</span>
+          {props.deep && <span>DeepSearch</span>}
         </button>
-        <button className={`pill ${props.think ? 'on' : ''}`} onClick={() => props.setThink(!props.think)} title="Reason longer before answering">
+        <button className={`mode-btn ${props.think ? 'on' : ''}`} onClick={() => props.setThink(!props.think)} title="Think: reason longer before answering">
           {Icon.think}
-          <span className="pill-text">Think</span>
+          {props.think && <span>Think</span>}
         </button>
-        <div className="spacer" />
-        <select className="pill select" value={props.model} onChange={(e) => props.setModel(e.target.value)} title="Model">
-          {props.models.length === 0 && <option value="">No models configured</option>}
-          {[...new Set(props.models.map((m) => m.provider))].map((provider) => (
-            <optgroup key={provider} label={PROVIDER_NAMES[provider] ?? provider}>
-              {props.models
-                .filter((m) => m.provider === provider)
-                .map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label.replace(/\s*\(.*\)$/, '')}
-                  </option>
-                ))}
-            </optgroup>
-          ))}
-        </select>
         {SpeechRecognition && !props.busy && (
-          <button className={`pill icon-only ${listening ? 'recording' : ''}`} title={listening ? 'Stop dictation' : 'Dictate'} onClick={toggleMic}>
+          <button className={`mode-btn ${listening ? 'recording' : ''}`} title={listening ? 'Stop dictation' : 'Dictate'} onClick={toggleMic}>
             {Icon.mic}
           </button>
         )}

@@ -6,14 +6,16 @@ import { buildTools, describeCall } from './tools.js'
 import { memoryPrompt, memoryTools } from './memory.js'
 import { formatRecalled, recall } from './recall.js'
 import { taskTools } from './tasks.js'
+import { botTools, teamPrompt } from './bots.js'
+import type { Bot } from '@si-bot/shared'
 import { attachmentParts } from './attachments.js'
 import { contextPrompt, notebookTools, recentWindow } from './context.js'
 
 const MAX_STEPS = 12
 const DEEP_MAX_STEPS = 30
 
-const SYSTEM = `You are Si, a personal AI assistant. You are one persistent assistant, not a fresh session: the conversation
-below is a single continuous timeline with the user, and you keep long-term memory across it.
+const SYSTEM = `You are {name}, one of the user's AI assistants{role}. You are one persistent assistant, not a fresh session: the
+conversation below is a single continuous timeline with the user, and you keep long-term memory across it.
 Current time: {now} ({tz}).
 
 How you answer
@@ -49,6 +51,7 @@ DeepSearch mode is on: the user wants a thorough, well-sourced answer, and time 
 every key claim. End with a short "Open questions" note only if something important is unresolved.`
 
 export interface TurnInput {
+  bot: Bot
   modelId: string
   /** Id of the newest message to answer from; history is everything up to and including it. */
   upToId: number
@@ -61,6 +64,8 @@ export interface TurnInput {
   extraSystem?: string
   /** A user turn that is sent to the model but not stored (scheduled task instructions). */
   appendUser?: string
+  /** How message_bot reaches another bot; omitted when this bot is answering another bot (no loops). */
+  deliver?: (from: Bot, to: Bot, text: string) => Promise<string>
   /** Leave out the task tools (scheduled runs must not schedule more runs). */
   noTaskTools?: boolean
   signal?: AbortSignal
@@ -145,8 +150,8 @@ function hostOf(url: string) {
 }
 
 /** The recent timeline as model messages, with attachments inlined. Images only travel with the newest message. */
-async function loadHistory(upToId: number): Promise<{ messages: ModelMessage[]; oldestId: number }> {
-  const rows = await recentWindow(upToId)
+async function loadHistory(botId: number, upToId: number): Promise<{ messages: ModelMessage[]; oldestId: number }> {
+  const rows = await recentWindow(botId, upToId)
   // A user message with no reply after it was interrupted (stopped, failed, or still running elsewhere). Leave it out,
   // or the model answers it again alongside the new one.
   const ordered = rows.filter((r, i, all) => {
@@ -167,13 +172,26 @@ async function loadHistory(upToId: number): Promise<{ messages: ModelMessage[]; 
   return { messages, oldestId: Number(ordered[0]?.id ?? upToId) }
 }
 
-export async function buildSystem(opts: { timezone: string; deep?: boolean; query: string; beforeId: number; extra?: string }) {
-  const recalled = await recall(opts.query, { beforeId: opts.beforeId }).catch(() => [])
+export async function buildSystem(opts: {
+  bot: Bot
+  timezone: string
+  deep?: boolean
+  query: string
+  beforeId: number
+  extra?: string
+}) {
+  const { bot } = opts
+  const recalled = await recall(opts.query, { beforeId: opts.beforeId, botId: bot.id }).catch(() => [])
   return (
-    SYSTEM.replace('{now}', nowIn(opts.timezone)).replace('{tz}', opts.timezone) +
+    SYSTEM.replace('{name}', bot.name)
+      .replace('{role}', bot.role ? `, whose role is: ${bot.role}` : '')
+      .replace('{now}', nowIn(opts.timezone))
+      .replace('{tz}', opts.timezone) +
+    (bot.instructions.trim() ? `\n\nYour instructions from the user:\n${bot.instructions.trim()}` : '') +
+    (await teamPrompt(bot)) +
     (opts.deep ? DEEP : '') +
     (await memoryPrompt(opts.query)) +
-    (await contextPrompt()) +
+    (await contextPrompt(bot.id)) +
     (recalled.length
       ? `\n\nRelevant moments from earlier in your timeline (recalled automatically; use them only if they help):\n${formatRecalled(recalled)}`
       : '') +
@@ -198,13 +216,14 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
 }
 
 async function runTurnOnce(input: TurnInput): Promise<TurnResult> {
-  const { messages, oldestId } = await loadHistory(input.upToId)
+  const { messages, oldestId } = await loadHistory(input.bot.id, input.upToId)
   if (input.appendUser) {
     // A scheduled run answers only its own instruction, not a user message left unanswered in the timeline.
     while (messages.at(-1)?.role === 'user') messages.pop()
     messages.push({ role: 'user', content: input.appendUser })
   }
   const system = await buildSystem({
+    bot: input.bot,
     timezone: input.timezone,
     deep: input.deep,
     query: input.query,
@@ -212,10 +231,11 @@ async function runTurnOnce(input: TurnInput): Promise<TurnResult> {
     extra: input.extraSystem,
   })
   const tools = {
-    ...buildTools(),
-    ...memoryTools(),
-    ...notebookTools(),
-    ...(input.noTaskTools ? {} : taskTools(() => input.timezone)),
+    ...buildTools(input.bot.id),
+    ...memoryTools(input.bot.id),
+    ...notebookTools(input.bot.id),
+    ...(input.noTaskTools ? {} : taskTools(input.bot.id, () => input.timezone)),
+    ...(input.deliver ? botTools(input.bot, input.deliver) : {}),
   }
 
   const emit = async (e: ChatEvent) => {

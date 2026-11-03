@@ -2,10 +2,54 @@
 
 export type Role = 'user' | 'assistant'
 
-/** One entry in the assistant's single, persistent timeline. */
+/**
+ * A bot: one named assistant with its own role, instructions, model and persistent timeline.
+ * Avatar is "dicebear:<style>:<seed>" (drawn in the app) or "file:<attachment id>" (an uploaded picture).
+ */
+export interface Bot {
+  id: number
+  name: string
+  role: string
+  avatar: string
+  instructions: string
+  model: string | null
+  team: string | null
+  pinned: boolean
+  createdAt: string
+  /** Newest message in this bot's timeline, for the sidebar. */
+  lastMessage?: { id: number; role: Role; preview: string; createdAt: string } | null
+}
+
+export interface BotInput {
+  name?: string
+  role?: string
+  avatar?: string
+  instructions?: string
+  model?: string | null
+  team?: string | null
+  pinned?: boolean
+}
+
+/** A file in a bot's library: uploads in its timeline and images it made. */
+export interface LibraryItem extends AttachmentMeta {
+  createdAt: string
+  /** True when the bot made it (e.g. a chart), false when the user uploaded it. */
+  generated: boolean
+}
+
+/** One tool action a bot took, for the Computer tab. */
+export interface Activity extends ToolStep {
+  messageId: number
+  createdAt: string
+}
+
+/** One entry in a bot's persistent timeline. */
 export interface Message {
   id: number
+  botId: number
   role: Role
+  /** Set when another bot wrote this message into this bot's timeline. */
+  fromBotId?: number
   content: string
   model: string | null
   /** Tool calls the assistant made while producing this message. */
@@ -59,6 +103,7 @@ export interface Fact {
 /** A job Si runs on its own: once at a time, or repeatedly on a cron schedule. */
 export interface Task {
   id: number
+  botId: number
   title: string
   prompt: string
   /** Cron expression (5 fields) for repeating tasks. */
@@ -80,6 +125,8 @@ export interface ModelOption {
 }
 
 export interface ChatRequest {
+  /** The bot to talk to (defaults to the first bot). */
+  botId?: number
   content: string
   model?: string
   think?: boolean

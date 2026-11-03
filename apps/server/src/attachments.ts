@@ -13,7 +13,12 @@ export function isImage(mediaType: string) {
 }
 
 /** Stores an upload and extracts its text up front (PDFs and text files) so each chat turn is cheap. */
-export async function saveAttachment(name: string, mediaType: string, data: Uint8Array): Promise<AttachmentMeta> {
+export async function saveAttachment(
+  name: string,
+  mediaType: string,
+  data: Uint8Array,
+  botId?: number,
+): Promise<AttachmentMeta> {
   let text: string | null = null
   if (mediaType === 'application/pdf' || /\.pdf$/i.test(name)) {
     mediaType = 'application/pdf'
@@ -24,8 +29,9 @@ export async function saveAttachment(name: string, mediaType: string, data: Uint
     throw new Error(`Unsupported file type: ${mediaType || name}`)
   }
   const [row] = await sql`
-    insert into attachments (name, media_type, size, data, text)
-    values (${name}, ${mediaType}, ${data.byteLength}, ${Buffer.from(data)}, ${text?.slice(0, MAX_TEXT_CHARS) ?? null})
+    insert into attachments (name, media_type, size, data, text, bot_id)
+    values (${name}, ${mediaType}, ${data.byteLength}, ${Buffer.from(data)}, ${text?.slice(0, MAX_TEXT_CHARS) ?? null},
+            ${botId ?? null})
     returning id, name, media_type, size`
   return toMeta(row)
 }
@@ -37,7 +43,8 @@ function toMeta(r: any): AttachmentMeta {
 export async function claimAttachments(ids: number[], messageId: number) {
   if (!ids.length) return []
   const rows = await sql`
-    update attachments set message_id = ${messageId}
+    update attachments set message_id = ${messageId},
+      bot_id = (select bot_id from messages where id = ${messageId})
     where id = any(${ids}) and message_id is null
     returning id, name, media_type, size`
   return rows.map(toMeta)
