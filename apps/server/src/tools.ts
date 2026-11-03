@@ -2,37 +2,76 @@ import { tool } from 'ai'
 import { z } from 'zod'
 import { parseHTML } from 'linkedom'
 import { Readability } from '@mozilla/readability'
+import { extractText, getDocumentProxy } from 'unpdf'
 
 const env = process.env
 const MAX_PAGE_CHARS = 20_000
 
-interface SearchHit {
+export interface SearchHit {
   title: string
   url: string
   snippet: string
+  date?: string
 }
 
-async function searxng(query: string): Promise<SearchHit[]> {
+type Recency = 'day' | 'week' | 'month' | 'year'
+
+async function searxng(query: string, recency?: Recency): Promise<SearchHit[]> {
   const url = new URL('/search', env.SEARXNG_URL)
   url.searchParams.set('q', query)
   url.searchParams.set('format', 'json')
+  if (recency) url.searchParams.set('time_range', recency)
   const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
   if (!res.ok) throw new Error(`SearXNG returned ${res.status}`)
   const data: any = await res.json()
-  return (data.results ?? []).slice(0, 8).map((r: any) => ({ title: r.title, url: r.url, snippet: r.content ?? '' }))
+  return (data.results ?? []).slice(0, 8).map((r: any) => ({
+    title: r.title,
+    url: r.url,
+    snippet: r.content ?? '',
+    ...(r.publishedDate ? { date: String(r.publishedDate).slice(0, 10) } : {}),
+  }))
 }
 
-async function brave(query: string): Promise<SearchHit[]> {
+async function brave(query: string, recency?: Recency): Promise<SearchHit[]> {
   const url = new URL('https://api.search.brave.com/res/v1/web/search')
   url.searchParams.set('q', query)
   url.searchParams.set('count', '8')
+  if (recency) url.searchParams.set('freshness', { day: 'pd', week: 'pw', month: 'pm', year: 'py' }[recency])
   const res = await fetch(url, {
     headers: { 'X-Subscription-Token': env.BRAVE_API_KEY!, accept: 'application/json' },
     signal: AbortSignal.timeout(15_000),
   })
   if (!res.ok) throw new Error(`Brave Search returned ${res.status}`)
   const data: any = await res.json()
-  return (data.web?.results ?? []).map((r: any) => ({ title: r.title, url: r.url, snippet: r.description ?? '' }))
+  return (data.web?.results ?? []).map((r: any) => ({
+    title: r.title,
+    url: r.url,
+    snippet: r.description ?? '',
+    ...(r.page_age ? { date: String(r.page_age).slice(0, 10) } : {}),
+  }))
+}
+
+/** Runs several queries in parallel and merges the hits, dropping duplicate URLs. */
+export async function search(queries: string[], recency?: Recency): Promise<SearchHit[]> {
+  const engine = env.BRAVE_API_KEY ? brave : searxng
+  const settled = await Promise.allSettled(queries.map((q) => engine(q, recency)))
+  const failures = settled.filter((r) => r.status === 'rejected') as PromiseRejectedResult[]
+  if (failures.length === settled.length) throw failures[0].reason
+  const seen = new Set<string>()
+  const hits: SearchHit[] = []
+  // Interleave so each query's best results come first.
+  const lists = settled.map((r) => (r.status === 'fulfilled' ? r.value.slice(0, 6) : []))
+  for (let i = 0; i < 6; i++) {
+    for (const list of lists) {
+      const h = list[i]
+      if (!h) continue
+      const key = h.url.replace(/[#?].*$/, '').replace(/\/$/, '')
+      if (seen.has(key)) continue
+      seen.add(key)
+      hits.push(h)
+    }
+  }
+  return hits
 }
 
 /** Fetches a page and returns its readable text (article extraction, falling back to body text). */
@@ -44,6 +83,10 @@ export async function readPage(url: string): Promise<{ title: string; url: strin
   })
   if (!res.ok) throw new Error(`${url} returned ${res.status}`)
   const type = res.headers.get('content-type') ?? ''
+  if (type.includes('pdf') || /\.pdf($|\?)/i.test(res.url)) {
+    const text = await pdfText(new Uint8Array(await res.arrayBuffer()))
+    return { title: res.url.split('/').pop() || url, url: res.url, text: text.slice(0, MAX_PAGE_CHARS) }
+  }
   const raw = await res.text()
   if (!type.includes('html')) return { title: url, url: res.url, text: raw.slice(0, MAX_PAGE_CHARS) }
 
@@ -51,6 +94,14 @@ export async function readPage(url: string): Promise<{ title: string; url: strin
   const article = new Readability(document as any).parse()
   const text = (article?.textContent ?? document.body?.textContent ?? '').replace(/\n\s*\n\s*/g, '\n\n').trim()
   return { title: article?.title ?? document.title ?? url, url: res.url, text: text.slice(0, MAX_PAGE_CHARS) }
+}
+
+/** Plain text of a PDF, pages separated by blank lines. */
+export async function pdfText(data: Uint8Array): Promise<string> {
+  // pdf.js transfers (detaches) the buffer it is given, so hand it a copy.
+  const pdf = await getDocumentProxy(data.slice())
+  const { text } = await extractText(pdf, { mergePages: false })
+  return (text as string[]).map((t, i) => `[page ${i + 1}]\n${t.trim()}`).join('\n\n')
 }
 
 async function runCode(language: 'python' | 'javascript', code: string) {
@@ -72,16 +123,32 @@ export function buildTools() {
     tools.web_search = tool({
       description:
         'Search the web for current information, news, facts you are unsure of, or anything after your training cutoff. ' +
-        'Returns titles, URLs and snippets. Follow up with read_page for details.',
-      inputSchema: z.object({ query: z.string().describe('Search query, as you would type it into a search engine') }),
-      execute: async ({ query }) => ({ results: env.BRAVE_API_KEY ? await brave(query) : await searxng(query) }),
+        'Pass up to 4 differently-worded queries at once; they run in parallel. Returns titles, URLs, snippets and ' +
+        'dates when known. Follow up with read_page on the best results.',
+      inputSchema: z.object({
+        queries: z.array(z.string()).min(1).max(4).describe('Search queries, as you would type them into a search engine'),
+        recency: z
+          .enum(['day', 'week', 'month', 'year'])
+          .optional()
+          .describe('Only results from this period. Use for news and anything time-sensitive.'),
+      }),
+      execute: async ({ queries, recency }) => ({ results: await search(queries.slice(0, 4), recency) }),
     })
   }
 
   tools.read_page = tool({
-    description: 'Fetch a web page or text file by URL and return its readable text.',
-    inputSchema: z.object({ url: z.string().url() }),
-    execute: async ({ url }) => readPage(url),
+    description:
+      'Fetch web pages, PDFs or text files and return their readable text. Pass up to 4 URLs at once; they load in parallel.',
+    inputSchema: z.object({ urls: z.array(z.string().url()).min(1).max(4) }),
+    execute: async ({ urls }) => {
+      const settled = await Promise.allSettled(urls.slice(0, 4).map((u) => readPage(u)))
+      const pages = settled.map((r, i) =>
+        r.status === 'fulfilled' ? r.value : { url: urls[i], error: String((r.reason as Error)?.message ?? r.reason) },
+      )
+      // Share the character budget across pages so several sources fit in context.
+      const budget = Math.floor(MAX_PAGE_CHARS * 1.5 / pages.length)
+      return { pages: pages.map((p: any) => (p.text ? { ...p, text: p.text.slice(0, budget) } : p)) }
+    },
   })
 
   if (env.SANDBOX_URL) {
@@ -102,14 +169,24 @@ export function buildTools() {
 
 /** One-line description of a tool call, shown in the app. */
 export function describeCall(name: string, input: any): string {
-  if (name === 'web_search') return `Searched the web for "${input?.query ?? ''}"`
-  if (name === 'read_page') {
-    try {
-      return `Read ${new URL(input?.url).hostname}`
-    } catch {
-      return 'Read a page'
-    }
+  if (name === 'web_search') {
+    const qs: string[] = input?.queries ?? (input?.query ? [input.query] : [])
+    return `Searched the web for ${qs.map((q) => `"${q}"`).join(', ')}`
   }
+  if (name === 'read_page') {
+    const urls: string[] = input?.urls ?? (input?.url ? [input.url] : [])
+    const hosts = urls.map((u) => {
+      try {
+        return new URL(u).hostname.replace(/^www\./, '')
+      } catch {
+        return 'a page'
+      }
+    })
+    return hosts.length ? `Read ${hosts.join(', ')}` : 'Read a page'
+  }
+  if (name === 'create_task') return `Scheduled "${input?.title ?? 'a task'}"`
+  if (name === 'list_tasks') return 'Checked scheduled tasks'
+  if (name === 'cancel_task') return 'Cancelled a scheduled task'
   if (name === 'remember') return `Remembered: ${input?.fact ?? ''}`
   if (name === 'recall_memory') return `Searched memory for "${input?.query ?? ''}"`
   if (name === 'run_code') return `Ran ${input?.language === 'javascript' ? 'JavaScript' : 'Python'}`

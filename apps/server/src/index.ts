@@ -3,31 +3,20 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { bearerAuth } from 'hono/bearer-auth'
 import { streamSSE } from 'hono/streaming'
-import { stepCountIs, streamText, type ModelMessage } from 'ai'
-import type { ChatEvent, ChatRequest, Message, ToolStep } from '@si-bot/shared'
-import { migrate, sql } from './db.js'
-import { defaultModel, getModel, listModels, thinkOptions } from './providers.js'
-import { buildTools, describeCall } from './tools.js'
-import { addFact, deleteFact, extractFacts, listFacts, memoryPrompt, memoryTools } from './memory.js'
-import { backfillEmbeddings, formatRecalled, indexMessage, recall } from './recall.js'
+import type { AttachmentMeta, ChatEvent, ChatRequest, Message, Task } from '@si-bot/shared'
+import { getSetting, migrate, setSetting, sql } from './db.js'
+import { defaultModel, discoverModels, listModels } from './providers.js'
+import { addFact, deleteFact, extractFacts, listFacts } from './memory.js'
+import { backfillEmbeddings, indexMessage } from './recall.js'
+import { runTurn, suggestFollowUps, validTimezone } from './agent.js'
+import { createTask, deleteTask, listTasks, startScheduler, toTask, updateTask } from './tasks.js'
+import { attachmentsFor, claimAttachments, getAttachment, MAX_FILE_BYTES, saveAttachment } from './attachments.js'
 
 const token = process.env.SIBOT_TOKEN
 if (!token || token === 'change-me') {
   console.error('Set SIBOT_TOKEN in .env (openssl rand -hex 32).')
   process.exit(1)
 }
-
-const CONTEXT_MESSAGES = Number(process.env.CONTEXT_MESSAGES ?? 40)
-const MAX_STEPS = 10
-const tools = { ...buildTools(), ...memoryTools() }
-
-const SYSTEM = `You are Si, a personal AI assistant. You are one persistent assistant, not a fresh session:
-the conversation below is a single continuous timeline with the user, and you keep long-term memory across it.
-Be direct, warm and concise. Use markdown when it helps. Today is {date}.
-Use your tools whenever they make the answer better: search the web for anything current or uncertain and read the
-best sources before answering, and run code for math, data or anything you would otherwise estimate.
-When you use web sources, cite them inline as markdown links.
-Save anything the user wants remembered with the remember tool, and use recall_memory to look up older conversations.`
 
 function toMessage(r: any): Message {
   return {
@@ -36,26 +25,65 @@ function toMessage(r: any): Message {
     content: r.content,
     model: r.model,
     steps: r.steps ?? undefined,
+    reasoning: r.reasoning ?? undefined,
+    thoughtMs: r.thought_ms ?? undefined,
+    sources: r.sources ?? undefined,
+    taskId: r.task_id ? Number(r.task_id) : undefined,
+    partial: r.partial || undefined,
     createdAt: r.created_at.toISOString(),
   }
 }
 
-function clip(text: string, max = 4000) {
-  return text.length > max ? text.slice(0, max) + '\n…' : text
+async function withAttachments(rows: any[]): Promise<Message[]> {
+  const files = await attachmentsFor(rows.filter((r) => r.role === 'user').map((r) => Number(r.id)))
+  return rows.map((r) => {
+    const m = toMessage(r)
+    const a = files.get(m.id)
+    if (a) m.attachments = a
+    return m
+  })
+}
+
+async function saveReply(result: Awaited<ReturnType<typeof runTurn>>, modelId: string, taskId?: number) {
+  const [row] = await sql`
+    insert into messages (role, content, model, steps, reasoning, thought_ms, sources, partial, task_id)
+    values ('assistant', ${result.text}, ${modelId}, ${result.steps.length ? sql.json(result.steps as any) : null},
+            ${result.reasoning || null}, ${result.thoughtMs || null},
+            ${result.sources.length ? sql.json(result.sources as any) : null}, ${result.partial}, ${taskId ?? null})
+    returning *`
+  return row
 }
 
 const app = new Hono()
 app.use('*', cors())
 app.get('/health', (c) => c.json({ ok: true }))
-app.use('/api/*', bearerAuth({ token }))
+// Files can also be fetched with ?token= so the app can show images in <img> tags.
+app.use('/api/files/:id', async (c, next) => {
+  if (c.req.method === 'GET' && c.req.query('token') === token) return next()
+  return bearerAuth({ token })(c, next)
+})
+app.use('/api/*', async (c, next) => {
+  if (c.req.path.startsWith('/api/files/') && c.req.method === 'GET') return next()
+  return bearerAuth({ token })(c, next)
+})
 
 app.get('/api/models', (c) => c.json({ models: listModels(), default: defaultModel() ?? null }))
 
-/** The timeline, newest page last. ?before=<id> pages backwards. */
+/** The timeline, newest page last. ?before=<id> pages backwards; ?after=<id> returns newer messages (polling). */
 app.get('/api/messages', async (c) => {
+  const after = Number(c.req.query('after') ?? 0)
+  if (after) {
+    const rows = await sql`select * from messages where id > ${after} order by id limit 100`
+    return c.json({ messages: await withAttachments(rows) })
+  }
   const before = Number(c.req.query('before') ?? 0) || Number.MAX_SAFE_INTEGER
   const rows = await sql`select * from messages where id < ${before} order by id desc limit 100`
-  return c.json({ messages: rows.reverse().map(toMessage) })
+  return c.json({ messages: await withAttachments([...rows].reverse()) })
+})
+
+app.delete('/api/messages/:id', async (c) => {
+  await sql`delete from messages where id = ${Number(c.req.param('id'))}`
+  return c.json({ ok: true })
 })
 
 app.get('/api/memory', async (c) => c.json({ facts: await listFacts() }))
@@ -70,88 +98,139 @@ app.delete('/api/memory/:id', async (c) => {
   return c.json({ facts: await listFacts() })
 })
 
+app.get('/api/tasks', async (c) => c.json({ tasks: await listTasks() }))
+app.post('/api/tasks', async (c) => {
+  const body = await c.req.json<{ title: string; prompt: string; cron?: string; runAt?: string; timezone?: string }>()
+  if (!body.title?.trim() || !body.prompt?.trim()) return c.json({ error: 'title and prompt required' }, 400)
+  try {
+    await createTask({ ...body, timezone: validTimezone(body.timezone) })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 400)
+  }
+  return c.json({ tasks: await listTasks() })
+})
+app.patch('/api/tasks/:id', async (c) => {
+  await updateTask(Number(c.req.param('id')), await c.req.json())
+  return c.json({ tasks: await listTasks() })
+})
+app.delete('/api/tasks/:id', async (c) => {
+  await deleteTask(Number(c.req.param('id')))
+  return c.json({ tasks: await listTasks() })
+})
+/** Runs a task now, outside its schedule. The result lands in the timeline like a scheduled run. */
+app.post('/api/tasks/:id/run', async (c) => {
+  const [row] = await sql`select * from tasks where id = ${Number(c.req.param('id'))}`
+  if (!row) return c.json({ error: 'not found' }, 404)
+  void runTask(toTask(row))
+  return c.json({ ok: true })
+})
+
+app.post('/api/files', async (c) => {
+  const form = await c.req.formData()
+  const file = form.get('file')
+  if (!(file instanceof File)) return c.json({ error: 'file required' }, 400)
+  if (file.size > MAX_FILE_BYTES) return c.json({ error: 'File is larger than 20 MB' }, 413)
+  try {
+    const meta = await saveAttachment(file.name, file.type, new Uint8Array(await file.arrayBuffer()))
+    return c.json({ file: meta })
+  } catch (err: any) {
+    return c.json({ error: err.message }, 400)
+  }
+})
+app.get('/api/files/:id', async (c) => {
+  const file = await getAttachment(Number(c.req.param('id')))
+  if (!file) return c.json({ error: 'not found' }, 404)
+  return c.body(new Uint8Array(file.data), 200, {
+    'content-type': file.media_type,
+    'content-disposition': `inline; filename="${encodeURIComponent(file.name)}"`,
+    'cache-control': 'private, max-age=31536000, immutable',
+  })
+})
+
 app.post('/api/chat', async (c) => {
   const body = await c.req.json<ChatRequest>()
-  const content = body.content?.trim()
-  const modelId = body.model ?? defaultModel()
-  if (!content) return c.json({ error: 'content required' }, 400)
+  const modelId = body.model && listModels().some((m) => m.id === body.model) ? body.model : defaultModel()
   if (!modelId) return c.json({ error: 'No provider configured. Add an API key to .env.' }, 400)
+  const timezone = validTimezone(body.timezone) ?? (await getSetting('timezone', 'UTC'))
+  if (body.timezone && timezone === body.timezone) void setSetting('timezone', timezone)
 
-  const [userRow] = await sql`insert into messages (role, content) values ('user', ${content}) returning *`
-  void indexMessage(Number(userRow.id), content)
-  const history = await sql`select id, role, content from messages order by id desc limit ${CONTEXT_MESSAGES}`
-  const messages: ModelMessage[] = [...history].reverse().map((r) => ({ role: r.role, content: r.content }))
-  const oldestInContext = Number(history.at(-1)?.id ?? userRow.id)
-  const recalled = await recall(content, { beforeId: oldestInContext }).catch(() => [])
-  const system =
-    SYSTEM.replace('{date}', new Date().toDateString()) +
-    (await memoryPrompt()) +
-    (recalled.length
-      ? `\n\nRelevant moments from earlier in your timeline (recalled automatically; use them only if they help):\n${formatRecalled(recalled)}`
-      : '')
+  let userRow: any
+  let attached: AttachmentMeta[] = []
+  if (body.regenerate) {
+    ;[userRow] = await sql`select * from messages where role = 'user' order by id desc limit 1`
+    if (!userRow) return c.json({ error: 'Nothing to regenerate' }, 400)
+    await sql`delete from messages where id > ${userRow.id}`
+    attached = (await attachmentsFor([Number(userRow.id)])).get(Number(userRow.id)) ?? []
+  } else {
+    const content = body.content?.trim() ?? ''
+    const files = body.attachments ?? []
+    if (!content && !files.length) return c.json({ error: 'content required' }, 400)
+    if (body.replaceFrom) await sql`delete from messages where id >= ${body.replaceFrom}`
+    ;[userRow] = await sql`insert into messages (role, content) values ('user', ${content}) returning *`
+    attached = await claimAttachments(files, Number(userRow.id))
+    void indexMessage(Number(userRow.id), content)
+  }
+  const userId = Number(userRow.id)
+  const content: string = userRow.content
 
   return streamSSE(c, async (stream) => {
     const send = (e: ChatEvent) => stream.writeSSE({ data: JSON.stringify(e) })
-    await send({ type: 'user', message: toMessage(userRow) })
-    let full = ''
-    const steps: ToolStep[] = []
-    try {
-      const result = streamText({
-        model: getModel(modelId),
-        system,
-        messages,
-        tools,
-        stopWhen: stepCountIs(MAX_STEPS),
-        abortSignal: c.req.raw.signal,
-        providerOptions: body.think ? (thinkOptions(modelId) as any) : undefined,
-      })
-      let newStep = false
-      for await (const part of result.fullStream) {
-        if (part.type === 'start-step') {
-          newStep = full.length > 0
-        } else if (part.type === 'text-delta') {
-          // Text from separate steps (before and after a tool call) would otherwise run together.
-          const text = newStep && !/\s$/.test(full) ? '\n\n' + part.text : part.text
-          newStep = false
-          full += text
-          await send({ type: 'delta', text })
-        } else if (part.type === 'tool-call') {
-          const step: ToolStep = {
-            id: part.toolCallId,
-            name: part.toolName,
-            label: describeCall(part.toolName, part.input),
-            input: part.input,
-          }
-          steps.push(step)
-          await send({ type: 'tool-call', step })
-        } else if (part.type === 'tool-result' || part.type === 'tool-error') {
-          const step = steps.find((s) => s.id === part.toolCallId)
-          const update =
-            part.type === 'tool-result'
-              ? { output: clip(typeof part.output === 'string' ? part.output : JSON.stringify(part.output, null, 2)) }
-              : { error: String((part as any).error?.message ?? (part as any).error) }
-          if (step) Object.assign(step, update)
-          await send({ type: 'tool-result', id: part.toolCallId, ...update })
-        } else if (part.type === 'error') {
-          throw (part as any).error
-        }
+    await send({ type: 'user', message: { ...toMessage(userRow), ...(attached.length ? { attachments: attached } : {}) } })
+    const result = await runTurn({
+      modelId,
+      upToId: userId,
+      query: content,
+      think: body.think,
+      deep: body.deep,
+      timezone,
+      signal: c.req.raw.signal,
+      onEvent: send,
+    })
+    // Save whatever was produced, including a reply the user stopped half-way, so the timeline stays honest.
+    if (result.text || result.steps.length) {
+      const row = await saveReply(result, modelId)
+      await send({ type: 'done', message: toMessage(row) }).catch(() => {})
+      if (!result.partial) {
+        void extractFacts(content, result.text, Number(row.id))
+        void indexMessage(Number(row.id), result.text)
       }
-      const [row] = await sql`
-        insert into messages (role, content, model, steps)
-        values ('assistant', ${full}, ${modelId}, ${steps.length ? sql.json(steps as any) : null})
-        returning *`
-      await send({ type: 'done', message: toMessage(row) })
-      void extractFacts(content, full, Number(row.id))
-      void indexMessage(Number(row.id), full)
-    } catch (err: any) {
-      console.error('[chat]', err)
-      await send({ type: 'error', error: err?.message ?? String(err) })
+    }
+    if (result.error) await send({ type: 'error', error: result.error }).catch(() => {})
+    if (!result.partial && !result.error && !c.req.raw.signal.aborted) {
+      const suggestions = await suggestFollowUps(content, result.text, modelId)
+      if (suggestions.length) await send({ type: 'suggestions', suggestions }).catch(() => {})
     }
   })
 })
 
+/** Runs a scheduled task and posts the result into the timeline as an assistant message. */
+async function runTask(task: Task) {
+  const modelId = defaultModel()
+  if (!modelId) return
+  const [last] = await sql`select coalesce(max(id), 0) as id from messages`
+  const result = await runTurn({
+    modelId,
+    upToId: Number(last.id),
+    query: task.prompt,
+    timezone: task.timezone,
+    noTaskTools: true,
+    extraSystem:
+      `You are now running the scheduled task "${task.title}" on your own; the user is not watching live. ` +
+      'Write the result as a message to the user, starting with a short bold title. Do not ask questions; do the work ' +
+      'with your tools.',
+    appendUser: `[Scheduled task "${task.title}"] ${task.prompt}`,
+    onEvent: () => {},
+  })
+  if (result.text) {
+    const row = await saveReply(result, modelId, task.id)
+    void indexMessage(Number(row.id), result.text)
+  }
+}
+
 const port = Number(process.env.PORT ?? 8787)
 await migrate()
+await discoverModels()
 void backfillEmbeddings()
+startScheduler(runTask)
 serve({ fetch: app.fetch, port, hostname: '0.0.0.0' })
-console.log(`Si-Bot core listening on :${port} with ${listModels().length} models, tools: ${Object.keys(tools).join(', ')}`)
+console.log(`Si-Bot core listening on :${port} with ${listModels().length} models`)
