@@ -1,6 +1,7 @@
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import { createHash } from 'node:crypto'
 import { createProviderRegistry, type LanguageModel } from 'ai'
 import type { ModelOption } from '@si-bot/shared'
 
@@ -47,6 +48,13 @@ if (env.OPENCODE_API_KEY) {
     name: 'opencode',
     baseURL: env.OPENCODE_BASE_URL || 'https://opencode.ai/zen/go/v1',
     apiKey: env.OPENCODE_API_KEY,
+    // Go rejects requests without a stable session id and asks clients to name themselves.
+    // Si is one continuous conversation, so one id for the whole install (derived, never the token itself).
+    headers: {
+      'x-opencode-session':
+        env.OPENCODE_SESSION_ID || 'si-' + createHash('sha256').update(`si-bot:${env.SIBOT_TOKEN}`).digest('hex').slice(0, 32),
+      'user-agent': 'si-bot/0.1',
+    },
   })
   add('opencode', [
     ['deepseek-v4.1-flash', 'DeepSeek V4.1 Flash (OpenCode Go)'],
