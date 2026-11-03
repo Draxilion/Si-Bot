@@ -1,0 +1,11 @@
+# Minimal SearXNG config for Si-Bot: JSON output on, rate limiter off (only the core server calls it).
+use_default_settings: true
+server:
+  secret_key: "overridden-by-SEARXNG_SECRET-env"
+  limiter: false
+  image_proxy: false
+search:
+  safe_search: 0
+  formats:
+    - html
+    - json

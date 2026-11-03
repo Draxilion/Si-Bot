@@ -22,5 +22,6 @@ export async function migrate() {
       source_message_id bigint references messages(id) on delete set null,
       created_at timestamptz not null default now()
     )`
+  await sql`alter table messages add column if not exists steps jsonb`
   await sql`create unique index if not exists facts_text_uniq on facts (lower(text))`
 }
