@@ -41,6 +41,18 @@ if (env.OPENROUTER_API_KEY) {
     ['deepseek/deepseek-r1', 'DeepSeek R1 (OpenRouter)'],
   ])
 }
+// OpenCode Go subscription: OpenAI-compatible endpoint, one key for its hosted open models.
+if (env.OPENCODE_API_KEY) {
+  providers.opencode = createOpenAICompatible({
+    name: 'opencode',
+    baseURL: env.OPENCODE_BASE_URL || 'https://opencode.ai/zen/go/v1',
+    apiKey: env.OPENCODE_API_KEY,
+  })
+  add('opencode', [
+    ['deepseek-v4.1-flash', 'DeepSeek V4.1 Flash (OpenCode Go)'],
+    ['deepseek-v4-pro', 'DeepSeek V4 Pro (OpenCode Go)'],
+  ])
+}
 if (env.OLLAMA_BASE_URL) {
   providers.ollama = createOpenAICompatible({ name: 'ollama', baseURL: env.OLLAMA_BASE_URL })
   add('ollama', [['llama3.2', 'Llama 3.2 (local)']])

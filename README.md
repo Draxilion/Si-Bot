@@ -5,7 +5,7 @@ A self-hosted, persistent AI assistant with a native app. One assistant, one con
 ## What works today (Phase 1, in progress)
 
 - Streaming chat on one persistent timeline, stored in Postgres
-- Providers by API key: Anthropic, OpenAI, OpenRouter, Ollama (plus any model via `EXTRA_MODELS`)
+- Providers by API key: Anthropic, OpenAI, OpenRouter, OpenCode Go, Ollama (plus any model via `EXTRA_MODELS`)
 - Think mode (extended reasoning on Claude and OpenAI)
 - Tools with live steps in the app: web search (self-hosted SearXNG, or Brave with `BRAVE_API_KEY`), reading web pages, and a code sandbox for Python (numpy, pandas, matplotlib) and JavaScript
 - Memory: facts extracted after each exchange and injected into every prompt (viewable and editable in the app), plus recall over the whole timeline. Each message Si gets pulls in relevant older moments by keyword and by meaning (pgvector), and Si has `remember` and `recall_memory` tools
