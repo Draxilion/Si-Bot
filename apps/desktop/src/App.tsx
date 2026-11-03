@@ -6,8 +6,9 @@ import { AssistantMessage, BotsContext, UserMessage, type LiveReply } from './Me
 import { Composer } from './Composer'
 import { setFileResolver } from './Markdown'
 import { Avatar, randomAvatar, setAvatarFileResolver } from './Avatar'
-import { Sidebar, applyLayout, type Page, type SidebarActions } from './Sidebar'
+import { Sidebar, applyLayout, pinnedBots as pinnedBotsOf, type Page, type SidebarActions } from './Sidebar'
 import { DialogHost, confirmDialog } from './Menu'
+import { Switcher } from './Switcher'
 import { BotPanel } from './BotPanel'
 import { DayDivider, MemoryView, SearchView, SettingsView, TasksView } from './Pages'
 
@@ -68,9 +69,16 @@ export default function App() {
   const [suggestions, setSuggestions] = useState<{ botId: number; list: string[] } | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [error, setError] = useState<{ botId: number; text: string } | null>(null)
+  const [switcher, setSwitcher] = useState(false)
+  // Phones show either the bot list or one chat.
+  const [mobileList, setMobileList] = useState(true)
+  const [toast, setToast] = useState<{ text: string; undo?: () => void; n: number } | null>(null)
+  const [sideW, setSideW] = usePref('si.sideWidth', 280)
+  const [recent, setRecent] = usePref<number[]>('si.recent', [])
   const [newBot, setNewBot] = useState<{ team: string | null } | null>(null)
   const [version, setVersion] = useState(0)
   const abort = useRef<AbortController | null>(null)
+  const searchSeed = useRef('')
 
   const bot = bots.find((b) => b.id === activeId) ?? bots[0]
   const messages = (bot && timelines[bot.id]) ?? []
@@ -197,6 +205,15 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') abort.current?.abort()
+      const mod = e.ctrlKey || e.metaKey
+      if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setSwitcher((v) => !v)
+      } else if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        // Next / previous bot in sidebar order.
+        e.preventDefault()
+        stepBot.current(e.key === 'ArrowDown' ? 1 : -1)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -295,17 +312,32 @@ export default function App() {
     open: (id) => {
       setActiveId(id)
       setPage(null)
+      setMobileList(false)
     },
     details: (id) => {
       setActiveId(id)
       setPage(null)
       setPanelOpen(true)
     },
-    page: (p) => setPage(page === p ? null : p),
+    page: (p) => {
+      setPage(page === p ? null : p)
+      setMobileList(false)
+    },
     newBot: (team) => setNewBot({ team: team ?? null }),
-    arrange: (l: Layout) => void mutate((r) => applyLayout(r.bots, r.teams, l), () => api.layout(l)),
-    renameBot: (id, name) =>
-      void mutate((r) => ({ ...r, bots: r.bots.map((b) => (b.id === id ? { ...b, name } : b)) }), () => api.updateBot(id, { name })),
+    arrange: (l: Layout, text?: string) => {
+      const before: Layout = {
+        teams: [...teams],
+        order: bots.map((b) => ({ id: b.id, team: b.team })),
+        pins: pinnedBotsOf(bots).map((b) => b.id),
+      }
+      void mutate((r) => applyLayout(r.bots, r.teams, l), () => api.layout(l))
+      if (text) showToast(text, () => void mutate((r) => applyLayout(r.bots, r.teams, before), () => api.layout(before)))
+    },
+    renameBot: (id, name) => {
+      const old = bots.find((b) => b.id === id)?.name
+      void mutate((r) => ({ ...r, bots: r.bots.map((b) => (b.id === id ? { ...b, name } : b)) }), () => api.updateBot(id, { name }))
+      if (old) showToast(`Renamed ${old} to ${name}`, () => actions.renameBot(id, old))
+    },
     duplicateBot: async (b) => {
       const r = await mutate(null, () =>
         api.createBot({ name: `${b.name} copy`, role: b.role, avatar: b.avatar, instructions: b.instructions, model: b.model, team: b.team }),
@@ -335,6 +367,7 @@ export default function App() {
         }),
         () => api.renameTeam(from, to),
       )
+      if (!teams.includes(to)) showToast(`Renamed ${from} to ${to}`, () => void actions.renameTeam(to, from))
     },
     deleteTeam: async (name) => {
       const n = bots.filter((b) => b.team === name).length
@@ -354,17 +387,56 @@ export default function App() {
     },
   }
 
+  // Remember the order bots were visited in, for the switcher.
+  useEffect(() => {
+    if (bot) setRecent((r) => (r[0] === bot.id ? r : [bot.id, ...r.filter((x) => x !== bot.id)].slice(0, 30)))
+  }, [bot?.id, setRecent])
+
+  const stepBot = useRef((_d: number) => {})
+  stepBot.current = (d) => {
+    const order = [...pinnedBotsOf(bots), ...teams.flatMap((t) => bots.filter((b) => b.team === t)), ...bots.filter((b) => !b.team || !teams.includes(b.team))]
+    const seen = new Set<number>()
+    const uniq = order.filter((b) => !seen.has(b.id) && seen.add(b.id))
+    const i = uniq.findIndex((b) => b.id === bot?.id)
+    const next = uniq[(i + d + uniq.length) % uniq.length]
+    if (next) actions.open(next.id)
+  }
+
+  function showToast(text: string, undo?: () => void) {
+    const n = Date.now()
+    setToast({ text, undo, n })
+    setTimeout(() => setToast((t) => (t?.n === n ? null : t)), 6000)
+  }
+
   const working = useMemo(() => new Set(live ? [live.botId] : []), [live])
   const modelLabels = useMemo(() => new Map(models.map((m) => [m.id, m.label.replace(/\s*\(.*\)$/, '')])), [models])
   const taskTitles = useMemo(() => new Map(tasks.map((t) => [t.id, t.title])), [tasks])
 
   return (
     <BotsContext.Provider value={bots}>
-      <div className={`app ${panelOpen && bot && !page ? 'with-panel' : ''}`}>
-        <Sidebar bots={bots} teams={teams} activeId={bot?.id ?? null} page={page} unread={unread} working={working} me={me} actions={actions} />
+      <div className={`app ${panelOpen && bot && !page ? 'with-panel' : ''} ${mobileList ? 'mobile-list' : ''}`} style={{ '--side-w': `${sideW}px` } as React.CSSProperties}>
+        <Sidebar
+          bots={bots}
+          teams={teams}
+          activeId={bot?.id ?? null}
+          page={page}
+          unread={unread}
+          working={working}
+          me={me}
+          width={sideW}
+          onResize={setSideW}
+          actions={actions}
+        />
         <main className="main">
+          {page && (
+            <button className="round-btn mobile-back" onClick={() => (setPage(null), setMobileList(true))} title="All bots">
+              {Icon.chevron}
+            </button>
+          )}
           {page === 'search' && (
             <SearchView
+              key={searchSeed.current}
+              initial={searchSeed.current}
               api={api}
               bots={bots}
               onOpen={(id) => {
@@ -409,6 +481,7 @@ export default function App() {
               taskTitles={taskTitles}
               onSend={(o) => send(bot, o)}
               onTogglePanel={() => setPanelOpen(!panelOpen)}
+              onBack={() => setMobileList(true)}
               composer={{
                 placeholder: `Message ${bot.name}`,
                 think,
@@ -455,6 +528,40 @@ export default function App() {
           />
         )}
         <DialogHost />
+        {switcher && (
+          <Switcher
+            bots={bots}
+            recent={recent}
+            unread={unread}
+            onOpen={actions.open}
+            onClose={() => setSwitcher(false)}
+            actions={(q) => [
+              ...(q
+                ? [{ id: 'search', label: `Search all messages for "${q}"`, icon: Icon.search, run: () => { searchSeed.current = q; setPage('search') } }]
+                : []),
+              { id: 'new-bot', label: 'New bot', icon: Icon.plus, run: () => actions.newBot() },
+              { id: 'tasks', label: 'Tasks', icon: Icon.tasks, run: () => setPage('tasks') },
+              { id: 'memory', label: 'Memory', icon: Icon.memory, run: () => setPage('memory') },
+              { id: 'settings', label: 'Settings', icon: Icon.settings, run: () => setPage('settings') },
+              ...(bot ? [{ id: 'details', label: `Details for ${bot.name}`, icon: Icon.info, run: () => actions.details(bot.id) }] : []),
+            ]}
+          />
+        )}
+        {toast && (
+          <div className="toast" key={toast.n}>
+            <span>{toast.text}</span>
+            {toast.undo && (
+              <button
+                onClick={() => {
+                  toast.undo!()
+                  setToast(null)
+                }}
+              >
+                Undo
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </BotsContext.Provider>
   )
@@ -478,6 +585,7 @@ function ChatView(props: {
   taskTitles: Map<number, string>
   onSend: (opts: SendOpts) => void
   onTogglePanel: () => void
+  onBack: () => void
   composer: React.ComponentProps<typeof Composer>
 }) {
   const { messages, live, bot } = props
@@ -495,6 +603,9 @@ function ChatView(props: {
 
   return (
     <div className="chat">
+      <button className="round-btn mobile-back" onClick={props.onBack} title="All bots">
+        {Icon.chevron}
+      </button>
       <button className="bot-pill" onClick={props.onTogglePanel} title="Show details">
         <Avatar avatar={bot.avatar} name={bot.name} size={26} />
         {label(bot)}

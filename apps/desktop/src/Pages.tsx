@@ -182,8 +182,8 @@ function plainSnippet(s: string) {
     .trim()
 }
 
-export function SearchView({ api, bots, onOpen }: { api: Api; bots: Bot[]; onOpen: (botId: number) => void }) {
-  const [q, setQ] = useState('')
+export function SearchView({ api, bots, onOpen, initial = '' }: { api: Api; bots: Bot[]; onOpen: (botId: number) => void; initial?: string }) {
+  const [q, setQ] = useState(initial)
   const [results, setResults] = useState<(Message & { snippet: string })[] | null>(null)
   const [open, setOpen] = useState<number | null>(null)
   useEffect(() => {

@@ -45,7 +45,8 @@ export interface SidebarActions {
   details: (id: number) => void
   page: (p: Page) => void
   newBot: (team?: string | null) => void
-  arrange: (l: Layout) => void
+  /** Saves a new arrangement; with a label, an Undo toast says what changed. */
+  arrange: (l: Layout, label?: string) => void
   renameBot: (id: number, name: string) => void
   duplicateBot: (b: Bot) => void
   deleteBot: (b: Bot) => void
@@ -95,6 +96,8 @@ export function Sidebar(props: {
   unread: (b: Bot) => boolean
   working: Set<number>
   me: string
+  width: number
+  onResize: (w: number) => void
   actions: SidebarActions
 }) {
   const { bots, teams, actions: act } = props
@@ -104,7 +107,7 @@ export function Sidebar(props: {
   const [rename, setRename] = useState<Rename | null>(null)
   const [drag, setDrag] = useState<Drag | null>(null)
   const [drop, setDrop] = useState<Drop | null>(null)
-  const pending = useRef<{ start: () => Drag; x: number; y: number; touch: boolean; timer?: number; ready: boolean } | null>(null)
+  const pending = useRef<{ start: () => Drag; x: number; y: number; touch: boolean; timer?: number; ready: boolean; longPress?: (x: number, y: number) => void } | null>(null)
   const dragged = useRef(false)
   const scroller = useRef<HTMLDivElement>(null)
   const lastY = useRef(0)
@@ -174,7 +177,7 @@ export function Sidebar(props: {
       const rest = teams.filter((x) => x !== d.name)
       const at = t.before === null ? rest.length : rest.indexOf(t.before)
       rest.splice(at, 0, d.name)
-      if (rest.join('\n') !== teams.join('\n')) act.arrange({ teams: rest })
+      if (rest.join('\n') !== teams.join('\n')) act.arrange({ teams: rest }, `Moved category ${d.name}`)
       return
     }
     const bot = bots.find((b) => b.id === d.id)
@@ -183,7 +186,7 @@ export function Sidebar(props: {
       const rest = pinned.filter((b) => b.id !== bot.id).map((b) => b.id)
       const at = t.beforeId === null ? rest.length : rest.indexOf(t.beforeId)
       rest.splice(at < 0 ? rest.length : at, 0, bot.id)
-      act.arrange({ pins: rest })
+      act.arrange({ pins: rest }, bot.pinned ? undefined : `Pinned ${bot.name}`)
       return
     }
     if (t.type !== 'list' || t.beforeId === bot.id) return
@@ -197,8 +200,13 @@ export function Sidebar(props: {
     rest.splice(at < 0 ? rest.length : at, 0, { ...bot, team: t.team })
     const layout: Layout = { order: rest.map((b) => ({ id: b.id, team: b.team || null })) }
     // Dragging a bot out of the pinned row into the list unpins it.
-    if (d.fromPins && bot.pinned) layout.pins = pinned.filter((b) => b.id !== bot.id).map((b) => b.id)
-    act.arrange(layout)
+    const unpin = d.fromPins && bot.pinned
+    if (unpin) layout.pins = pinned.filter((b) => b.id !== bot.id).map((b) => b.id)
+    const moved = (bot.team || null) !== t.team
+    act.arrange(
+      layout,
+      unpin ? `Unpinned ${bot.name}` : moved ? `Moved ${bot.name} to ${t.team ?? 'Unassigned'}` : undefined,
+    )
   }
 
   useEffect(() => {
@@ -233,6 +241,12 @@ export function Sidebar(props: {
       if (p) {
         clearTimeout(p.timer)
         pending.current = null
+        // A touch held still past the long-press delay opens the menu instead of the bot.
+        if (p.touch && p.ready && !drag) {
+          dragged.current = true
+          p.longPress?.(p.x, p.y)
+          setTimeout(() => (dragged.current = false), 400)
+        }
       }
       if (drag) {
         finish(drag, drop)
@@ -280,22 +294,12 @@ export function Sidebar(props: {
   function grab(e: React.PointerEvent, start: () => Drag, onLongPress?: (x: number, y: number) => void) {
     if (e.button !== 0 || rename) return
     const touch = e.pointerType === 'touch'
-    const p = { start, x: e.clientX, y: e.clientY, touch, ready: !touch, timer: undefined as number | undefined }
+    const p = { start, x: e.clientX, y: e.clientY, touch, ready: !touch, timer: undefined as number | undefined, longPress: onLongPress }
     if (touch) {
+      // After a short hold, moving drags and letting go opens the menu.
       p.timer = window.setTimeout(() => {
         p.ready = true
         navigator.vibrate?.(10)
-        // A long press that doesn't move opens the menu; moving after it drags.
-        const x = p.x
-        const y = p.y
-        const check = () => {
-          if (pending.current === p) {
-            dragged.current = true
-            onLongPress?.(x, y)
-            setTimeout(() => (dragged.current = false), 400)
-          }
-        }
-        window.addEventListener('pointerup', check, { once: true })
       }, 380)
     }
     pending.current = p
@@ -323,8 +327,8 @@ export function Sidebar(props: {
       'sep',
       { label: 'Rename', icon: Icon.edit, hint: 'F2', onClick: () => setRename({ kind: 'bot', id: b.id }) },
       b.pinned
-        ? { label: 'Unpin', icon: Icon.unpin, onClick: () => act.arrange({ pins: pinned.filter((x) => x.id !== b.id).map((x) => x.id) }) }
-        : { label: 'Pin to top', icon: Icon.pin, onClick: () => act.arrange({ pins: [...pinned.map((x) => x.id), b.id] }) },
+        ? { label: 'Unpin', icon: Icon.unpin, onClick: () => act.arrange({ pins: pinned.filter((x) => x.id !== b.id).map((x) => x.id) }, `Unpinned ${b.name}`) }
+        : { label: 'Pin to top', icon: Icon.pin, onClick: () => act.arrange({ pins: [...pinned.map((x) => x.id), b.id] }, `Pinned ${b.name}`) },
       { label: 'Move to', icon: Icon.folder, submenu: moveTo },
       ...(props.unread(b) ? [{ label: 'Mark as read', icon: Icon.eye, onClick: () => act.markRead(b) }] : []),
       { label: 'Duplicate', icon: Icon.copy, onClick: () => act.duplicateBot(b) },
@@ -354,7 +358,7 @@ export function Sidebar(props: {
     const rest = bots.filter((x) => x.id !== b.id)
     const last = rest.map((x, i) => [x, i] as const).filter(([x]) => (x.team || null) === team).at(-1)
     rest.splice(last ? last[1] + 1 : rest.length, 0, { ...b, team })
-    act.arrange({ order: rest.map((x) => ({ id: x.id, team: x.team || null })) })
+    act.arrange({ order: rest.map((x) => ({ id: x.id, team: x.team || null })) }, `Moved ${b.name} to ${team ?? 'Unassigned'}`)
   }
 
   function openMenu(e: React.MouseEvent, items: MenuEntry[]) {
@@ -599,6 +603,27 @@ export function Sidebar(props: {
         </div>
       )}
       {menu && <Menu menu={menu} onClose={() => setMenu(null)} />}
+      <div
+        className="side-resize"
+        title="Drag to resize, double-click to reset"
+        onDoubleClick={() => props.onResize(280)}
+        onPointerDown={(e) => {
+          e.preventDefault()
+          const startX = e.clientX
+          const startW = props.width
+          const el = e.currentTarget
+          el.setPointerCapture(e.pointerId)
+          el.classList.add('active')
+          const move = (ev: PointerEvent) => props.onResize(Math.max(220, Math.min(440, startW + ev.clientX - startX)))
+          const up = () => {
+            el.classList.remove('active')
+            el.removeEventListener('pointermove', move)
+            el.removeEventListener('pointerup', up)
+          }
+          el.addEventListener('pointermove', move)
+          el.addEventListener('pointerup', up)
+        }}
+      />
     </aside>
   )
 }
