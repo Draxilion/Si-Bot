@@ -79,16 +79,35 @@ export default function App() {
     return r.bots
   }, [api])
 
+  // Load bots, models and tasks. If the server is down (Docker still starting, laptop just woke up),
+  // keep retrying so the app recovers by itself instead of showing a stale error.
   useEffect(() => {
     if (!conn.token) return
-    Promise.all([refreshBots(), api.models(), api.tasks()])
-      .then(([, m, t]) => {
-        setModels(m.models)
-        setDefaultModel(m.default ?? '')
-        setTasks(t.tasks)
-        setError(null)
-      })
-      .catch((e) => setError({ botId: 0, text: e.message }))
+    let cancelled = false
+    let retry: ReturnType<typeof setTimeout> | undefined
+    let failed = false
+    const load = () =>
+      Promise.all([refreshBots(), api.models(), api.tasks()])
+        .then(([, m, t]) => {
+          if (cancelled) return
+          setModels(m.models)
+          setDefaultModel(m.default ?? '')
+          setTasks(t.tasks)
+          setError(null)
+          // Timelines that failed to load while offline are fetched again.
+          if (failed) setTimelines({})
+        })
+        .catch((e) => {
+          if (cancelled) return
+          failed = true
+          setError({ botId: 0, text: e.message })
+          if (e.message !== 'Wrong access token') retry = setTimeout(load, 3000)
+        })
+    load()
+    return () => {
+      cancelled = true
+      clearTimeout(retry)
+    }
   }, [api, conn, refreshBots])
 
   // Load a bot's timeline the first time it is opened.
@@ -317,7 +336,9 @@ export default function App() {
               }}
             />
           )}
-          {!page && !bot && conn.token && <div className="hero muted">Loading your bots…</div>}
+          {!page && !bot && conn.token && (
+            <div className="hero muted">{error ? `${error.text} Retrying…` : 'Loading your bots…'}</div>
+          )}
         </main>
         {panelOpen && bot && !page && (
           <BotPanel
