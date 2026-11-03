@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { AttachmentMeta, Bot, Message, ModelOption, Task } from '@si-bot/shared'
-import { Api, loadConnection, saveConnection, type Connection } from './api'
+import type { AttachmentMeta, Bot, Layout, Message, ModelOption, Task } from '@si-bot/shared'
+import { Api, loadConnection, saveConnection, type Connection, type Roster } from './api'
 import { Icon } from './icons'
 import { AssistantMessage, BotsContext, UserMessage, type LiveReply } from './Message'
 import { Composer } from './Composer'
 import { setFileResolver } from './Markdown'
 import { Avatar, randomAvatar, setAvatarFileResolver } from './Avatar'
-import { Sidebar, type Page } from './Sidebar'
+import { Sidebar, applyLayout, type Page, type SidebarActions } from './Sidebar'
+import { DialogHost, confirmDialog } from './Menu'
 import { BotPanel } from './BotPanel'
 import { DayDivider, MemoryView, SearchView, SettingsView, TasksView } from './Pages'
 
@@ -51,6 +52,7 @@ export default function App() {
   setAvatarFileResolver(api.fileUrl)
 
   const [bots, setBots] = useState<Bot[]>([])
+  const [teams, setTeams] = useState<string[]>([])
   const [activeId, setActiveId] = usePref<number | null>('si.bot', null)
   const [page, setPage] = useState<Page | null>(conn.token ? null : 'settings')
   const [panelOpen, setPanelOpen] = usePref('si.panel', window.innerWidth > 1100)
@@ -66,18 +68,52 @@ export default function App() {
   const [suggestions, setSuggestions] = useState<{ botId: number; list: string[] } | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [error, setError] = useState<{ botId: number; text: string } | null>(null)
-  const [newBot, setNewBot] = useState(false)
+  const [newBot, setNewBot] = useState<{ team: string | null } | null>(null)
   const [version, setVersion] = useState(0)
   const abort = useRef<AbortController | null>(null)
 
   const bot = bots.find((b) => b.id === activeId) ?? bots[0]
   const messages = (bot && timelines[bot.id]) ?? []
 
+  // Saves in flight from drags and renames; a poll that lands meanwhile must not undo what the user just did.
+  const saving = useRef(0)
+  const setRoster = useCallback((r: Roster) => {
+    setBots(r.bots)
+    setTeams(r.teams)
+  }, [])
   const refreshBots = useCallback(async () => {
     const r = await api.bots()
-    setBots(r.bots)
+    if (!saving.current) setRoster(r)
     return r.bots
-  }, [api])
+  }, [api, setRoster])
+
+  /** Applies a change to the roster instantly, then saves it; on failure, reloads what the server has. */
+  const mutate = useCallback(
+    async (local: ((r: Roster) => Roster) | null, save: () => Promise<Roster>) => {
+      if (local) {
+        const cur = local({ bots: botsRef.current, teams: teamsRef.current })
+        setRoster(cur)
+      }
+      saving.current++
+      try {
+        const r = await save()
+        saving.current--
+        if (!saving.current) setRoster(r)
+        return r
+      } catch (e: any) {
+        saving.current--
+        setError({ botId: 0, text: e.message })
+        setTimeout(() => setError(null), 4000)
+        refreshBots().catch(() => {})
+        return null
+      }
+    },
+    [setRoster, refreshBots],
+  )
+  const botsRef = useRef(bots)
+  botsRef.current = bots
+  const teamsRef = useRef(teams)
+  teamsRef.current = teams
 
   // Load bots, models and tasks. If the server is down (Docker still starting, laptop just woke up),
   // keep retrying so the app recovers by itself instead of showing a stale error.
@@ -255,6 +291,69 @@ export default function App() {
     return lm.id > (read[b.id] ?? 0)
   }
 
+  const actions: SidebarActions = {
+    open: (id) => {
+      setActiveId(id)
+      setPage(null)
+    },
+    details: (id) => {
+      setActiveId(id)
+      setPage(null)
+      setPanelOpen(true)
+    },
+    page: (p) => setPage(page === p ? null : p),
+    newBot: (team) => setNewBot({ team: team ?? null }),
+    arrange: (l: Layout) => void mutate((r) => applyLayout(r.bots, r.teams, l), () => api.layout(l)),
+    renameBot: (id, name) =>
+      void mutate((r) => ({ ...r, bots: r.bots.map((b) => (b.id === id ? { ...b, name } : b)) }), () => api.updateBot(id, { name })),
+    duplicateBot: async (b) => {
+      const r = await mutate(null, () =>
+        api.createBot({ name: `${b.name} copy`, role: b.role, avatar: b.avatar, instructions: b.instructions, model: b.model, team: b.team }),
+      )
+      if (r && 'bot' in r) actions.open((r as any).bot.id)
+    },
+    deleteBot: async (b) => {
+      const ok = await confirmDialog({
+        title: `Delete ${b.name}?`,
+        body: 'Its whole timeline, notebook, files and scheduled tasks go too. This can\'t be undone.',
+        confirm: 'Delete',
+        danger: true,
+      })
+      if (!ok) return
+      const r = await mutate(null, () => api.deleteBot(b.id))
+      if (r && bot?.id === b.id) setActiveId(r.bots[0]?.id ?? null)
+    },
+    markRead: (b) => b.lastMessage && setRead((r) => ({ ...r, [b.id]: b.lastMessage!.id })),
+    createTeam: async (name) => {
+      await mutate((r) => ({ ...r, teams: r.teams.includes(name) ? r.teams : [...r.teams, name] }), () => api.createTeam(name))
+    },
+    renameTeam: async (from, to) => {
+      await mutate(
+        (r) => ({
+          teams: r.teams.includes(to) ? r.teams.filter((t) => t !== from) : r.teams.map((t) => (t === from ? to : t)),
+          bots: r.bots.map((b) => (b.team === from ? { ...b, team: to } : b)),
+        }),
+        () => api.renameTeam(from, to),
+      )
+    },
+    deleteTeam: async (name) => {
+      const n = bots.filter((b) => b.team === name).length
+      if (n) {
+        const ok = await confirmDialog({
+          title: `Delete category "${name}"?`,
+          body: `Its ${n === 1 ? 'bot moves' : `${n} bots move`} to Unassigned. No bot is deleted.`,
+          confirm: 'Delete category',
+          danger: true,
+        })
+        if (!ok) return
+      }
+      void mutate(
+        (r) => ({ teams: r.teams.filter((t) => t !== name), bots: r.bots.map((b) => (b.team === name ? { ...b, team: null } : b)) }),
+        () => api.deleteTeam(name),
+      )
+    },
+  }
+
   const working = useMemo(() => new Set(live ? [live.botId] : []), [live])
   const modelLabels = useMemo(() => new Map(models.map((m) => [m.id, m.label.replace(/\s*\(.*\)$/, '')])), [models])
   const taskTitles = useMemo(() => new Map(tasks.map((t) => [t.id, t.title])), [tasks])
@@ -262,20 +361,7 @@ export default function App() {
   return (
     <BotsContext.Provider value={bots}>
       <div className={`app ${panelOpen && bot && !page ? 'with-panel' : ''}`}>
-        <Sidebar
-          bots={bots}
-          activeId={bot?.id ?? null}
-          page={page}
-          unread={unread}
-          working={working}
-          me={me}
-          onOpen={(id) => {
-            setActiveId(id)
-            setPage(null)
-          }}
-          onPage={(p) => setPage(page === p ? null : p)}
-          onNewBot={() => setNewBot(true)}
-        />
+        <Sidebar bots={bots} teams={teams} activeId={bot?.id ?? null} page={page} unread={unread} working={working} me={me} actions={actions} />
         <main className="main">
           {page === 'search' && (
             <SearchView
@@ -348,27 +434,27 @@ export default function App() {
             models={models}
             defaultModel={defaultModel}
             version={version}
-            onSaved={setBots}
-            onDeleted={(list) => {
-              setBots(list)
-              setActiveId(list[0]?.id ?? null)
-            }}
+            teams={teams}
+            onSaved={setRoster}
+            onDelete={() => actions.deleteBot(bot)}
             onClose={() => setPanelOpen(false)}
           />
         )}
         {newBot && (
           <NewBotDialog
             api={api}
-            bots={bots}
-            onClose={() => setNewBot(false)}
-            onCreated={(b, list) => {
-              setBots(list)
+            teams={teams}
+            team={newBot.team}
+            onClose={() => setNewBot(null)}
+            onCreated={(b, r) => {
+              setRoster(r)
               setActiveId(b.id)
               setPage(null)
-              setNewBot(false)
+              setNewBot(null)
             }}
           />
         )}
+        <DialogHost />
       </div>
     </BotsContext.Provider>
   )
@@ -517,14 +603,14 @@ const TEMPLATES = [
   { name: 'Scout', role: 'Load finder', instructions: 'Find freight opportunities, rates and brokers for European road transport. Be specific and numeric.' },
 ]
 
-function NewBotDialog(props: { api: Api; bots: Bot[]; onClose: () => void; onCreated: (b: Bot, list: Bot[]) => void }) {
+function NewBotDialog(props: { api: Api; teams: string[]; team: string | null; onClose: () => void; onCreated: (b: Bot, r: Roster) => void }) {
   const [name, setName] = useState('')
   const [role, setRole] = useState('')
-  const [team, setTeam] = useState('')
+  const [team, setTeam] = useState(props.team ?? '')
   const [instructions, setInstructions] = useState('')
   const [avatar, setAvatar] = useState(() => randomAvatar('new'))
   const [error, setError] = useState<string | null>(null)
-  const teams = [...new Set(props.bots.map((b) => b.team).filter(Boolean))] as string[]
+  const teams = props.teams
 
   return (
     <div className="modal-back" onClick={props.onClose}>
@@ -535,7 +621,7 @@ function NewBotDialog(props: { api: Api; bots: Bot[]; onClose: () => void; onCre
           e.preventDefault()
           try {
             const r = await props.api.createBot({ name, role, team: team || null, instructions, avatar })
-            props.onCreated(r.bot, r.bots)
+            props.onCreated(r.bot, r)
           } catch (err: any) {
             setError(err.message)
           }

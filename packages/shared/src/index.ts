@@ -15,6 +15,8 @@ export interface Bot {
   model: string | null
   team: string | null
   pinned: boolean
+  /** Position among pinned bots. */
+  pinSort: number
   createdAt: string
   /** Newest message in this bot's timeline, for the sidebar. */
   lastMessage?: { id: number; role: Role; preview: string; createdAt: string } | null
@@ -28,6 +30,13 @@ export interface BotInput {
   model?: string | null
   team?: string | null
   pinned?: boolean
+}
+
+/** A sidebar arrangement after a drag: category order, bots in list order with their category, pinned bots in order. */
+export interface Layout {
+  teams?: string[]
+  order?: { id: number; team: string | null }[]
+  pins?: number[]
 }
 
 /** A file in a bot's library: uploads in its timeline and images it made. */

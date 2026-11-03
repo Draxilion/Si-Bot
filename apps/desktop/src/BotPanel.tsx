@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { Activity, Bot, BotInput, LibraryItem, ModelOption, Task } from '@si-bot/shared'
-import type { Api } from './api'
+import type { Api, Roster } from './api'
 import { AVATAR_STYLES, Avatar, randomAvatar } from './Avatar'
 import { PROVIDER_NAMES } from './Composer'
 import { Icon } from './icons'
@@ -17,8 +17,9 @@ export function BotPanel(props: {
   defaultModel: string
   /** Bumped whenever the bot's timeline changes, so Library and Computer refresh. */
   version: number
-  onSaved: (bots: Bot[]) => void
-  onDeleted: (bots: Bot[]) => void
+  teams: string[]
+  onSaved: (r: Roster) => void
+  onDelete: () => void
   onClose: () => void
 }) {
   const { bot } = props
@@ -42,7 +43,7 @@ export function BotPanel(props: {
         </div>
       </div>
       <div className="panel-body">
-        {tab === 'details' && <Details key={bot.id} {...props} />}
+        {tab === 'details' && <Details key={`${bot.id}|${bot.name}|${bot.role}|${bot.team}|${bot.pinned}|${bot.avatar}|${bot.model}`} {...props} />}
         {tab === 'library' && <Library api={props.api} botId={bot.id} version={props.version} />}
         {tab === 'computer' && <Computer api={props.api} botId={bot.id} version={props.version} />}
       </div>
@@ -56,7 +57,7 @@ function Details(props: React.ComponentProps<typeof BotPanel>) {
   const [saved, setSaved] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
-  const teams = [...new Set(props.bots.map((b) => b.team).filter(Boolean))] as string[]
+  const teams = props.teams
   const dirty = (['name', 'role', 'avatar', 'instructions', 'model', 'team', 'pinned'] as const).some(
     (k) => (form[k] ?? null) !== ((bot as any)[k] ?? null),
   )
@@ -71,7 +72,7 @@ function Details(props: React.ComponentProps<typeof BotPanel>) {
   async function save() {
     try {
       const r = await api.updateBot(bot.id, form)
-      props.onSaved(r.bots)
+      props.onSaved(r)
       setSaved(true)
       setTimeout(() => setSaved(false), 1500)
     } catch (e: any) {
@@ -188,14 +189,7 @@ function Details(props: React.ComponentProps<typeof BotPanel>) {
 
       <button
         className="link-btn danger-link"
-        onClick={async () => {
-          if (!confirm(`Delete ${bot.name} and its whole timeline? This can't be undone.`)) return
-          try {
-            props.onDeleted((await api.deleteBot(bot.id)).bots)
-          } catch (e: any) {
-            setError(e.message)
-          }
-        }}
+        onClick={props.onDelete}
       >
         Delete bot
       </button>

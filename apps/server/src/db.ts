@@ -76,8 +76,16 @@ export async function migrate() {
       sort integer not null default 0,
       created_at timestamptz not null default now()
     )`
+  // Categories in the sidebar. They exist on their own so an empty one can be kept, renamed and ordered.
+  await sql`alter table bots add column if not exists pin_sort integer not null default 0`
+  await sql`create table if not exists teams (name text primary key, sort integer not null default 0)`
   const [{ n }] = await sql`select count(*)::int as n from bots`
   if (n === 0) await seedBots()
+  await sql`
+    insert into teams (name, sort)
+    select team, row_number() over (order by min(sort)) + (select coalesce(max(sort), 0) from teams)
+    from bots where team is not null group by team
+    on conflict do nothing`
   const [first] = await sql`select min(id) as id from bots`
   const firstId = Number(first.id)
   for (const table of ['messages', 'tasks', 'attachments']) {

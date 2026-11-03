@@ -103,6 +103,35 @@ export const Icon = {
   play: svg(<path d="M7 5l12 7-12 7z" />),
   pause: svg(<path d="M8 5v14M16 5v14" />),
   plus: svg(<path d="M12 5v14M5 12h14" />),
+  pin: svg(<path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7" />),
+  unpin: svg(<path d="M9 4h6l-1 6 3 3H7l3-3zM12 13v7M4 4l16 16" />),
+  more: svg(
+    <>
+      <circle cx="5" cy="12" r="1.2" />
+      <circle cx="12" cy="12" r="1.2" />
+      <circle cx="19" cy="12" r="1.2" />
+    </>,
+  ),
+  folder: svg(<path d="M3 6.5A1.5 1.5 0 0 1 4.5 5H9l2 2h8.5A1.5 1.5 0 0 1 21 8.5v9a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z" />),
+  info: svg(
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 11v5M12 8h.01" />
+    </>,
+  ),
+  bot: svg(
+    <>
+      <rect x="4" y="8" width="16" height="11" rx="3" />
+      <path d="M12 4v4M9 13h.01M15 13h.01" />
+    </>,
+  ),
+  eye: svg(
+    <>
+      <path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z" />
+      <circle cx="12" cy="12" r="2.8" />
+    </>,
+  ),
+  grip: svg(<path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" />),
   down: svg(<path d="M12 5v14M5 12l7 7 7-7" />),
   spark: svg(<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" />),
 }

@@ -1,4 +1,4 @@
-import type { Activity, AttachmentMeta, Bot, BotInput, ChatEvent, ChatRequest, Fact, LibraryItem, Message, ModelOption, Task } from '@si-bot/shared'
+import type { Activity, AttachmentMeta, Bot, BotInput, Layout, ChatEvent, ChatRequest, Fact, LibraryItem, Message, ModelOption, Task } from '@si-bot/shared'
 
 export interface Connection {
   url: string
@@ -26,6 +26,12 @@ export function saveConnection(c: Connection) {
   try {
     localStorage.setItem(KEY, JSON.stringify(c))
   } catch {}
+}
+
+/** Bots in list order plus category names in order. */
+export interface Roster {
+  bots: Bot[]
+  teams: string[]
 }
 
 export class Api {
@@ -70,11 +76,16 @@ export class Api {
   messages = (botId: number, before?: number) =>
     this.req<{ messages: Message[] }>(`/api/messages?bot=${botId}${before ? `&before=${before}` : ''}`)
   newer = (botId: number, after: number) => this.req<{ messages: Message[] }>(`/api/messages?bot=${botId}&after=${after}`)
-  bots = () => this.req<{ bots: Bot[] }>('/api/bots')
-  createBot = (b: BotInput) => this.req<{ bot: Bot; bots: Bot[] }>('/api/bots', { method: 'POST', body: JSON.stringify(b) })
+  bots = () => this.req<Roster>('/api/bots')
+  createBot = (b: BotInput) => this.req<Roster & { bot: Bot }>('/api/bots', { method: 'POST', body: JSON.stringify(b) })
   updateBot = (id: number, b: BotInput) =>
-    this.req<{ bot: Bot; bots: Bot[] }>(`/api/bots/${id}`, { method: 'PATCH', body: JSON.stringify(b) })
-  deleteBot = (id: number) => this.req<{ bots: Bot[] }>(`/api/bots/${id}`, { method: 'DELETE' })
+    this.req<Roster & { bot: Bot }>(`/api/bots/${id}`, { method: 'PATCH', body: JSON.stringify(b) })
+  deleteBot = (id: number) => this.req<Roster>(`/api/bots/${id}`, { method: 'DELETE' })
+  layout = (l: Layout) => this.req<Roster>('/api/layout', { method: 'PUT', body: JSON.stringify(l) })
+  createTeam = (name: string) => this.req<Roster>('/api/teams', { method: 'POST', body: JSON.stringify({ name }) })
+  renameTeam = (from: string, name: string) =>
+    this.req<Roster>(`/api/teams/${encodeURIComponent(from)}`, { method: 'PATCH', body: JSON.stringify({ name }) })
+  deleteTeam = (name: string) => this.req<Roster>(`/api/teams/${encodeURIComponent(name)}`, { method: 'DELETE' })
   library = (id: number) => this.req<{ items: LibraryItem[] }>(`/api/bots/${id}/library`)
   activity = (id: number) => this.req<{ items: Activity[] }>(`/api/bots/${id}/activity`)
   search = (q: string) => this.req<{ messages: (Message & { snippet: string })[] }>(`/api/search?q=${encodeURIComponent(q)}`)

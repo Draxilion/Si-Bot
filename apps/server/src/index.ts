@@ -11,7 +11,7 @@ import { backfillEmbeddings, indexMessage } from './recall.js'
 import { runTurn, suggestFollowUps, validTimezone } from './agent.js'
 import { getDigest, getNotes, setDigestText, setNotes, updateDigest } from './context.js'
 import { createTask, deleteTask, listTasks, startScheduler, toTask, updateTask } from './tasks.js'
-import { activity, createBot, deleteBot, firstBotId, getBot, library, listBots, updateBot } from './bots.js'
+import { activity, createBot, createTeam, deleteBot, deleteTeam, firstBotId, getBot, library, listBots, listTeams, renameTeam, saveLayout, updateBot } from './bots.js'
 import { attachmentsFor, claimAttachments, getAttachment, MAX_FILE_BYTES, saveAttachment } from './attachments.js'
 
 const token = process.env.SIBOT_TOKEN
@@ -84,11 +84,36 @@ function modelFor(bot: Bot, requested?: string) {
   return ok(requested) ? requested! : ok(bot.model) ? bot.model! : defaultModel()
 }
 
-app.get('/api/bots', async (c) => c.json({ bots: await listBots() }))
+const roster = async () => ({ bots: await listBots(), teams: await listTeams() })
+app.get('/api/bots', async (c) => c.json(await roster()))
+app.put('/api/layout', async (c) => {
+  await saveLayout(await c.req.json())
+  return c.json(await roster())
+})
+app.post('/api/teams', async (c) => {
+  try {
+    await createTeam((await c.req.json<{ name: string }>()).name ?? '')
+  } catch (err: any) {
+    return c.json({ error: err.message }, 400)
+  }
+  return c.json(await roster())
+})
+app.patch('/api/teams/:name', async (c) => {
+  try {
+    await renameTeam(decodeURIComponent(c.req.param('name')), (await c.req.json<{ name: string }>()).name ?? '')
+  } catch (err: any) {
+    return c.json({ error: err.message }, 400)
+  }
+  return c.json(await roster())
+})
+app.delete('/api/teams/:name', async (c) => {
+  await deleteTeam(decodeURIComponent(c.req.param('name')))
+  return c.json(await roster())
+})
 app.post('/api/bots', async (c) => {
   try {
     const bot = await createBot(await c.req.json<BotInput>())
-    return c.json({ bot, bots: await listBots() })
+    return c.json({ bot, ...(await roster()) })
   } catch (err: any) {
     return c.json({ error: err.message }, 400)
   }
@@ -96,7 +121,7 @@ app.post('/api/bots', async (c) => {
 app.patch('/api/bots/:id', async (c) => {
   const bot = await updateBot(Number(c.req.param('id')), await c.req.json<BotInput>())
   if (!bot) return c.json({ error: 'not found' }, 404)
-  return c.json({ bot, bots: await listBots() })
+  return c.json({ bot, ...(await roster()) })
 })
 app.delete('/api/bots/:id', async (c) => {
   try {
@@ -104,7 +129,7 @@ app.delete('/api/bots/:id', async (c) => {
   } catch (err: any) {
     return c.json({ error: err.message }, 400)
   }
-  return c.json({ bots: await listBots() })
+  return c.json(await roster())
 })
 app.get('/api/bots/:id/library', async (c) => c.json({ items: await library(Number(c.req.param('id'))) }))
 app.get('/api/bots/:id/activity', async (c) => c.json({ items: await activity(Number(c.req.param('id'))) }))
