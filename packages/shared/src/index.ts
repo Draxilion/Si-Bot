@@ -103,6 +103,8 @@ export type ChatEvent =
   | { type: 'user'; message: Message }
   | { type: 'reasoning'; text: string }
   | { type: 'delta'; text: string }
+  /** Text streamed since `from` was the model narrating before a tool call: move it out of the answer into reasoning. */
+  | { type: 'retract'; from: number }
   | { type: 'tool-call'; step: ToolStep }
   | { type: 'tool-result'; id: string; output?: string; error?: string }
   | { type: 'sources'; sources: Source[] }

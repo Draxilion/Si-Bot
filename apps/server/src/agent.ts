@@ -65,6 +65,8 @@ export interface TurnInput {
 }
 
 export interface TurnResult {
+  /** The model that produced the reply (differs from the requested one after a fallback). */
+  modelId: string
   text: string
   reasoning: string
   thoughtMs: number
@@ -177,7 +179,22 @@ export async function buildSystem(opts: { timezone: string; deep?: boolean; quer
 }
 
 /** Runs one assistant turn with tools, streaming events as it goes. Never throws; failures come back in `error`. */
+/**
+ * Runs a turn, and if the model fails before producing anything (provider down, rate limit, model rejects the
+ * request), runs it once more on FALLBACK_MODEL so the user still gets an answer.
+ */
 export async function runTurn(input: TurnInput): Promise<TurnResult> {
+  const result = await runTurnOnce(input)
+  const fallback = process.env.FALLBACK_MODEL
+  const failedEarly = result.error && !result.text && !result.steps.length && !input.signal?.aborted
+  if (failedEarly && fallback && fallback !== input.modelId && listModels().some((m) => m.id === fallback)) {
+    console.error(`[chat] ${input.modelId} failed (${result.error}); retrying on ${fallback}`)
+    return runTurnOnce({ ...input, modelId: fallback })
+  }
+  return result
+}
+
+async function runTurnOnce(input: TurnInput): Promise<TurnResult> {
   const { messages, oldestId } = await loadHistory(input.upToId)
   if (input.appendUser) {
     // A scheduled run answers only its own instruction, not a user message left unanswered in the timeline.
@@ -225,8 +242,10 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
       providerOptions: input.think || input.deep ? (thinkOptions(input.modelId) as any) : undefined,
     })
     let newStep = false
+    let stepStart = 0
     for await (const part of result.fullStream) {
       if (part.type === 'start-step') {
+        stepStart = text.length
         newStep = text.length > 0
       } else if (part.type === 'reasoning-start') {
         reasoningStart = Date.now()
@@ -248,6 +267,13 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
         text += chunk
         await emit({ type: 'delta', text: chunk })
       } else if (part.type === 'tool-call') {
+        // "Let me look that up…" before a tool call is narration, not answer: fold it into the reasoning.
+        if (text.length > stepStart) {
+          const narration = text.slice(stepStart).trim()
+          text = text.slice(0, stepStart)
+          if (narration) reasoning += (reasoning ? '\n\n' : '') + narration
+          await emit({ type: 'retract', from: stepStart })
+        }
         const step: ToolStep = {
           id: part.toolCallId,
           name: part.toolName,
@@ -286,7 +312,7 @@ export async function runTurn(input: TurnInput): Promise<TurnResult> {
 
   const sources = collectSources(text, raw)
   if (sources.length) await emit({ type: 'sources', sources })
-  return { text, reasoning, thoughtMs, steps, sources, partial, error }
+  return { modelId: input.modelId, text, reasoning, thoughtMs, steps, sources, partial, error }
 }
 
 function friendlyError(err: any): string {

@@ -44,10 +44,10 @@ async function withAttachments(rows: any[]): Promise<Message[]> {
   })
 }
 
-async function saveReply(result: Awaited<ReturnType<typeof runTurn>>, modelId: string, taskId?: number) {
+async function saveReply(result: Awaited<ReturnType<typeof runTurn>>, taskId?: number) {
   const [row] = await sql`
     insert into messages (role, content, model, steps, reasoning, thought_ms, sources, partial, task_id)
-    values ('assistant', ${result.text}, ${modelId}, ${result.steps.length ? sql.json(result.steps as any) : null},
+    values ('assistant', ${result.text}, ${result.modelId}, ${result.steps.length ? sql.json(result.steps as any) : null},
             ${result.reasoning || null}, ${result.thoughtMs || null},
             ${result.sources.length ? sql.json(result.sources as any) : null}, ${result.partial}, ${taskId ?? null})
     returning *`
@@ -188,7 +188,7 @@ app.post('/api/chat', async (c) => {
     })
     // Save whatever was produced, including a reply the user stopped half-way, so the timeline stays honest.
     if (result.text || result.steps.length) {
-      const row = await saveReply(result, modelId)
+      const row = await saveReply(result)
       await send({ type: 'done', message: toMessage(row) }).catch(() => {})
       if (!result.partial) {
         void extractFacts(content, result.text, Number(row.id))
@@ -222,7 +222,7 @@ async function runTask(task: Task) {
     onEvent: () => {},
   })
   if (result.text) {
-    const row = await saveReply(result, modelId, task.id)
+    const row = await saveReply(result, task.id)
     void indexMessage(Number(row.id), result.text)
   }
 }

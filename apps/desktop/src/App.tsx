@@ -139,6 +139,8 @@ export default function App() {
           if (e.type === 'user') setMessages((m) => [...m.filter((x) => x.id !== e.message.id), e.message])
           else if (e.type === 'reasoning') setLive((s) => s && { ...s, reasoning: s.reasoning + e.text })
           else if (e.type === 'delta') setLive((s) => s && { ...s, text: s.text + e.text, reasoningDone: true })
+          else if (e.type === 'retract')
+            setLive((s) => s && { ...s, text: s.text.slice(0, e.from), reasoning: [s.reasoning, s.text.slice(e.from).trim()].filter(Boolean).join('\n\n') })
           else if (e.type === 'tool-call') setLive((s) => s && { ...s, reasoningDone: true, steps: [...s.steps, e.step] })
           else if (e.type === 'tool-result')
             setLive(
