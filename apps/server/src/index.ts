@@ -105,10 +105,16 @@ app.post('/api/chat', async (c) => {
         abortSignal: c.req.raw.signal,
         providerOptions: body.think ? (thinkOptions(modelId) as any) : undefined,
       })
+      let newStep = false
       for await (const part of result.fullStream) {
-        if (part.type === 'text-delta') {
-          full += part.text
-          await send({ type: 'delta', text: part.text })
+        if (part.type === 'start-step') {
+          newStep = full.length > 0
+        } else if (part.type === 'text-delta') {
+          // Text from separate steps (before and after a tool call) would otherwise run together.
+          const text = newStep && !/\s$/.test(full) ? '\n\n' + part.text : part.text
+          newStep = false
+          full += text
+          await send({ type: 'delta', text })
         } else if (part.type === 'tool-call') {
           const step: ToolStep = {
             id: part.toolCallId,

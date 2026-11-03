@@ -1,6 +1,7 @@
 import { createAnthropic } from '@ai-sdk/anthropic'
 import { createOpenAI } from '@ai-sdk/openai'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import { createHash } from 'node:crypto'
 import { createProviderRegistry, type LanguageModel } from 'ai'
 import type { ModelOption } from '@si-bot/shared'
 
@@ -39,6 +40,25 @@ if (env.OPENROUTER_API_KEY) {
     ['x-ai/grok-4', 'Grok 4 (OpenRouter)'],
     ['google/gemini-2.5-pro', 'Gemini 2.5 Pro (OpenRouter)'],
     ['deepseek/deepseek-r1', 'DeepSeek R1 (OpenRouter)'],
+  ])
+}
+// OpenCode Go subscription: OpenAI-compatible endpoint, one key for its hosted open models.
+if (env.OPENCODE_API_KEY) {
+  providers.opencode = createOpenAICompatible({
+    name: 'opencode',
+    baseURL: env.OPENCODE_BASE_URL || 'https://opencode.ai/zen/go/v1',
+    apiKey: env.OPENCODE_API_KEY,
+    // Go rejects requests without a stable session id and asks clients to name themselves.
+    // Si is one continuous conversation, so one id for the whole install (derived, never the token itself).
+    headers: {
+      'x-opencode-session':
+        env.OPENCODE_SESSION_ID || 'si-' + createHash('sha256').update(`si-bot:${env.SIBOT_TOKEN}`).digest('hex').slice(0, 32),
+      'user-agent': 'si-bot/0.1',
+    },
+  })
+  add('opencode', [
+    ['deepseek-v4.1-flash', 'DeepSeek V4.1 Flash (OpenCode Go)'],
+    ['deepseek-v4-pro', 'DeepSeek V4 Pro (OpenCode Go)'],
   ])
 }
 if (env.OLLAMA_BASE_URL) {
