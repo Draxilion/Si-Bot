@@ -1,7 +1,9 @@
-import { generateText } from 'ai'
+import { generateText, tool } from 'ai'
+import { z } from 'zod'
 import type { Fact } from '@si-bot/shared'
 import { sql } from './db.js'
 import { getModel, listModels } from './providers.js'
+import { formatRecalled, recall } from './recall.js'
 
 export async function listFacts(): Promise<Fact[]> {
   const rows = await sql`select id, text, created_at from facts order by created_at desc`
@@ -55,5 +57,31 @@ export async function extractFacts(userText: string, assistantText: string, sour
     }
   } catch (err) {
     console.error('[memory] extraction failed:', err)
+  }
+}
+
+/** Tools that let the assistant manage its own memory mid-conversation. */
+export function memoryTools() {
+  return {
+    remember: tool({
+      description:
+        'Save a durable fact about the user to long-term memory (preferences, people, projects, plans). ' +
+        'Use it when the user asks you to remember something or shares something clearly worth keeping.',
+      inputSchema: z.object({ fact: z.string().describe('One fact, third person, under 20 words') }),
+      execute: async ({ fact }) => {
+        await addFact(fact)
+        return { saved: fact }
+      },
+    }),
+    recall_memory: tool({
+      description:
+        'Search the whole conversation history with the user, by keyword and meaning. ' +
+        'Use it when the user refers to something from the past that is not in the recent conversation.',
+      inputSchema: z.object({ query: z.string() }),
+      execute: async ({ query }) => {
+        const found = await recall(query, { limit: 10 })
+        return { results: found.length ? formatRecalled(found, 1200) : 'Nothing found.' }
+      },
+    }),
   }
 }

@@ -23,5 +23,12 @@ export async function migrate() {
       created_at timestamptz not null default now()
     )`
   await sql`alter table messages add column if not exists steps jsonb`
+  // Keyword recall: full-text index over the whole timeline ('simple' config works for any language).
+  await sql`
+    alter table messages add column if not exists tsv tsvector
+    generated always as (to_tsvector('simple', content)) stored`
+  await sql`create index if not exists messages_tsv_idx on messages using gin (tsv)`
+  // Semantic recall: untyped vector so the embedding model can change; rows are matched on dimension.
+  await sql`alter table messages add column if not exists embedding vector`
   await sql`create unique index if not exists facts_text_uniq on facts (lower(text))`
 }

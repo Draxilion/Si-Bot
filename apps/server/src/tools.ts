@@ -110,6 +110,8 @@ export function describeCall(name: string, input: any): string {
       return 'Read a page'
     }
   }
+  if (name === 'remember') return `Remembered: ${input?.fact ?? ''}`
+  if (name === 'recall_memory') return `Searched memory for "${input?.query ?? ''}"`
   if (name === 'run_code') return `Ran ${input?.language === 'javascript' ? 'JavaScript' : 'Python'}`
   return `Used ${name}`
 }
