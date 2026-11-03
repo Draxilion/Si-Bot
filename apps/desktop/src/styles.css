@@ -80,6 +80,20 @@ svg .fill { fill: currentColor; stroke: none; }
 .msg.assistant table { border-collapse: collapse; }
 .msg.assistant th, .msg.assistant td { border: 1px solid var(--border); padding: 6px 10px; }
 .msg.live::after { content: ''; display: inline-block; width: 8px; height: 8px; margin-left: 4px; border-radius: 50%; background: var(--text); animation: pulse 1s infinite; }
+.msg.live:has(.steps):not(:has(p))::after { display: none; }
+.steps { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-bottom: 12px; }
+.step[open] { align-self: stretch; }
+.step { border: 1px solid var(--border); border-radius: 14px; background: var(--bg-soft); font-size: 13.5px; }
+.step summary { display: flex; align-items: center; gap: 8px; padding: 7px 12px; cursor: pointer; color: var(--text-muted); list-style: none; }
+.step summary::-webkit-details-marker { display: none; }
+.step summary:hover { color: var(--text); }
+.step-icon { display: grid; place-items: center; }
+.step-icon svg { width: 15px; height: 15px; }
+.step pre { margin: 0 12px 10px !important; max-height: 280px; overflow: auto; font-size: 12px !important; background: var(--surface) !important; }
+.step.failed summary { color: var(--danger); }
+.step-error { color: var(--danger); }
+.spinner { width: 12px; height: 12px; border: 2px solid var(--border-strong); border-top-color: var(--text); border-radius: 50%; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 50% { opacity: 0.2; } }
 .dock { padding: 8px 16px 20px; }
 .dock .composer { max-width: 760px; margin: 0 auto; }

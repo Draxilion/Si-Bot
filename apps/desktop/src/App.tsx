@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { Fact, Message, ModelOption } from '@si-bot/shared'
+import type { Fact, Message, ModelOption, ToolStep } from '@si-bot/shared'
 import { Api, loadConnection, saveConnection, type Connection } from './api'
 
 type View = 'chat' | 'memory' | 'settings'
+interface Live {
+  text: string
+  steps: ToolStep[]
+}
 
 const Icon = {
   chat: (
@@ -25,6 +29,18 @@ const Icon = {
   think: (
     <svg viewBox="0 0 24 24"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z" /></svg>
   ),
+  web_search: (
+    <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" /><path d="M20 20l-4.5-4.5" /></svg>
+  ),
+  read_page: (
+    <svg viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6z" /><path d="M9 12h6M9 16h6" /></svg>
+  ),
+  run_code: (
+    <svg viewBox="0 0 24 24"><path d="M8 8l-4 4 4 4M16 8l4 4-4 4" /></svg>
+  ),
+  tool: (
+    <svg viewBox="0 0 24 24"><path d="M14 6a4 4 0 0 0 5 5l-8 8a2 2 0 0 1-3-3z" /></svg>
+  ),
   trash: (
     <svg viewBox="0 0 24 24"><path d="M5 7h14M10 7V4h4v3M7 7l1 13h8l1-13" /></svg>
   ),
@@ -38,7 +54,7 @@ export default function App() {
   const [models, setModels] = useState<ModelOption[]>([])
   const [model, setModel] = useState<string>('')
   const [think, setThink] = useState(false)
-  const [streaming, setStreaming] = useState<string | null>(null)
+  const [streaming, setStreaming] = useState<Live | null>(null)
   const [error, setError] = useState<string | null>(null)
   const abort = useRef<AbortController | null>(null)
 
@@ -61,7 +77,7 @@ export default function App() {
 
   async function send(text: string) {
     setError(null)
-    setStreaming('')
+    setStreaming({ text: '', steps: [] })
     const ctrl = new AbortController()
     abort.current = ctrl
     try {
@@ -69,7 +85,16 @@ export default function App() {
         { content: text, model: model || undefined, think },
         (e) => {
           if (e.type === 'user') setMessages((m) => [...m, e.message])
-          else if (e.type === 'delta') setStreaming((s) => (s ?? '') + e.text)
+          else if (e.type === 'delta') setStreaming((s) => s && { ...s, text: s.text + e.text })
+          else if (e.type === 'tool-call') setStreaming((s) => s && { ...s, steps: [...s.steps, e.step] })
+          else if (e.type === 'tool-result')
+            setStreaming(
+              (s) =>
+                s && {
+                  ...s,
+                  steps: s.steps.map((st) => (st.id === e.id ? { ...st, output: e.output, error: e.error } : st)),
+                },
+            )
           else if (e.type === 'done') {
             setMessages((m) => [...m, e.message])
             setStreaming(null)
@@ -131,7 +156,7 @@ export default function App() {
 
 function ChatView(props: {
   messages: Message[]
-  streaming: string | null
+  streaming: Live | null
   error: string | null
   models: ModelOption[]
   model: string
@@ -167,9 +192,9 @@ function ChatView(props: {
       <div className="scroll">
         <div className="thread">
           {messages.map((m) => (
-            <Bubble key={m.id} role={m.role} content={m.content} />
+            <Bubble key={m.id} role={m.role} content={m.content} steps={m.steps} />
           ))}
-          {streaming !== null && <Bubble role="assistant" content={streaming || '…'} live />}
+          {streaming !== null && <Bubble role="assistant" content={streaming.text} steps={streaming.steps} live />}
           {props.error && <div className="error">{props.error}</div>}
           <div ref={bottom} />
         </div>
@@ -179,12 +204,38 @@ function ChatView(props: {
   )
 }
 
-function Bubble({ role, content, live }: { role: string; content: string; live?: boolean }) {
+function Bubble(props: { role: string; content: string; steps?: ToolStep[]; live?: boolean }) {
+  const { role, content, steps, live } = props
   if (role === 'user') return <div className="msg user">{content}</div>
   return (
     <div className={`msg assistant ${live ? 'live' : ''}`}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+      {steps && steps.length > 0 && (
+        <div className="steps">
+          {steps.map((s) => (
+            <Step key={s.id} step={s} />
+          ))}
+        </div>
+      )}
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ a: (p) => <a {...p} target="_blank" rel="noreferrer" /> }}>
+        {content}
+      </ReactMarkdown>
     </div>
+  )
+}
+
+function Step({ step }: { step: ToolStep }) {
+  const running = step.output === undefined && step.error === undefined
+  const code = step.name === 'run_code' ? (step.input as any)?.code : null
+  return (
+    <details className={`step ${running ? 'running' : ''} ${step.error ? 'failed' : ''}`}>
+      <summary>
+        <span className="step-icon">{Icon[step.name as keyof typeof Icon] ?? Icon.tool}</span>
+        {step.label}
+        {running && <span className="spinner" />}
+      </summary>
+      {code && <pre>{code}</pre>}
+      {step.error ? <pre className="step-error">{step.error}</pre> : step.output && <pre>{step.output}</pre>}
+    </details>
   )
 }
 

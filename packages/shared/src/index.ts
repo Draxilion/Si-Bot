@@ -8,7 +8,21 @@ export interface Message {
   role: Role
   content: string
   model: string | null
+  /** Tool calls the assistant made while producing this message. */
+  steps?: ToolStep[]
   createdAt: string
+}
+
+/** One tool call made by the assistant, e.g. a web search or a code run. */
+export interface ToolStep {
+  id: string
+  name: string
+  /** Human-readable summary, e.g. 'Searched the web for "tauri 2"'. */
+  label: string
+  input: unknown
+  /** Tool output, truncated for display. */
+  output?: string
+  error?: string
 }
 
 /** A long-term fact the assistant remembers about the user or their world. */
@@ -35,5 +49,7 @@ export interface ChatRequest {
 export type ChatEvent =
   | { type: 'user'; message: Message }
   | { type: 'delta'; text: string }
+  | { type: 'tool-call'; step: ToolStep }
+  | { type: 'tool-result'; id: string; output?: string; error?: string }
   | { type: 'done'; message: Message }
   | { type: 'error'; error: string }

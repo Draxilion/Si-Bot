@@ -3,10 +3,11 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { bearerAuth } from 'hono/bearer-auth'
 import { streamSSE } from 'hono/streaming'
-import { streamText, type ModelMessage } from 'ai'
-import type { ChatEvent, ChatRequest, Message } from '@si-bot/shared'
+import { stepCountIs, streamText, type ModelMessage } from 'ai'
+import type { ChatEvent, ChatRequest, Message, ToolStep } from '@si-bot/shared'
 import { migrate, sql } from './db.js'
 import { defaultModel, getModel, listModels, thinkOptions } from './providers.js'
+import { buildTools, describeCall } from './tools.js'
 import { addFact, deleteFact, extractFacts, listFacts, memoryPrompt } from './memory.js'
 
 const token = process.env.SIBOT_TOKEN
@@ -16,13 +17,29 @@ if (!token || token === 'change-me') {
 }
 
 const CONTEXT_MESSAGES = 40
+const MAX_STEPS = 10
+const tools = buildTools()
 
 const SYSTEM = `You are Si, a personal AI assistant. You are one persistent assistant, not a fresh session:
 the conversation below is a single continuous timeline with the user, and you keep long-term memory across it.
-Be direct, warm and concise. Use markdown when it helps. Today is {date}.`
+Be direct, warm and concise. Use markdown when it helps. Today is {date}.
+Use your tools whenever they make the answer better: search the web for anything current or uncertain and read the
+best sources before answering, and run code for math, data or anything you would otherwise estimate.
+When you use web sources, cite them inline as markdown links.`
 
 function toMessage(r: any): Message {
-  return { id: Number(r.id), role: r.role, content: r.content, model: r.model, createdAt: r.created_at.toISOString() }
+  return {
+    id: Number(r.id),
+    role: r.role,
+    content: r.content,
+    model: r.model,
+    steps: r.steps ?? undefined,
+    createdAt: r.created_at.toISOString(),
+  }
+}
+
+function clip(text: string, max = 4000) {
+  return text.length > max ? text.slice(0, max) + '\n…' : text
 }
 
 const app = new Hono()
@@ -67,19 +84,46 @@ app.post('/api/chat', async (c) => {
     const send = (e: ChatEvent) => stream.writeSSE({ data: JSON.stringify(e) })
     await send({ type: 'user', message: toMessage(userRow) })
     let full = ''
+    const steps: ToolStep[] = []
     try {
       const result = streamText({
         model: getModel(modelId),
         system,
         messages,
+        tools,
+        stopWhen: stepCountIs(MAX_STEPS),
+        abortSignal: c.req.raw.signal,
         providerOptions: body.think ? (thinkOptions(modelId) as any) : undefined,
       })
-      for await (const delta of result.textStream) {
-        full += delta
-        await send({ type: 'delta', text: delta })
+      for await (const part of result.fullStream) {
+        if (part.type === 'text-delta') {
+          full += part.text
+          await send({ type: 'delta', text: part.text })
+        } else if (part.type === 'tool-call') {
+          const step: ToolStep = {
+            id: part.toolCallId,
+            name: part.toolName,
+            label: describeCall(part.toolName, part.input),
+            input: part.input,
+          }
+          steps.push(step)
+          await send({ type: 'tool-call', step })
+        } else if (part.type === 'tool-result' || part.type === 'tool-error') {
+          const step = steps.find((s) => s.id === part.toolCallId)
+          const update =
+            part.type === 'tool-result'
+              ? { output: clip(typeof part.output === 'string' ? part.output : JSON.stringify(part.output, null, 2)) }
+              : { error: String((part as any).error?.message ?? (part as any).error) }
+          if (step) Object.assign(step, update)
+          await send({ type: 'tool-result', id: part.toolCallId, ...update })
+        } else if (part.type === 'error') {
+          throw (part as any).error
+        }
       }
       const [row] = await sql`
-        insert into messages (role, content, model) values ('assistant', ${full}, ${modelId}) returning *`
+        insert into messages (role, content, model, steps)
+        values ('assistant', ${full}, ${modelId}, ${steps.length ? sql.json(steps as any) : null})
+        returning *`
       await send({ type: 'done', message: toMessage(row) })
       void extractFacts(content, full, Number(row.id))
     } catch (err: any) {
@@ -92,4 +136,4 @@ app.post('/api/chat', async (c) => {
 const port = Number(process.env.PORT ?? 8787)
 await migrate()
 serve({ fetch: app.fetch, port, hostname: '0.0.0.0' })
-console.log(`Si-Bot core listening on :${port} with ${listModels().length} models`)
+console.log(`Si-Bot core listening on :${port} with ${listModels().length} models, tools: ${Object.keys(tools).join(', ')}`)

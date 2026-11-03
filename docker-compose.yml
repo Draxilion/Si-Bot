@@ -23,13 +23,42 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgres://sibot:${POSTGRES_PASSWORD:-sibot}@postgres:5432/sibot
+      SEARXNG_URL: http://searxng:8080
+      SANDBOX_URL: http://sandbox:8080
     ports:
       - "127.0.0.1:8787:8787"
     depends_on:
       postgres:
         condition: service_healthy
+      searxng:
+        condition: service_started
+      sandbox:
+        condition: service_started
+    networks: [default, sandbox]
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  # Private web search: no API key, no tracking. Only reachable by core.
+  searxng:
+    image: searxng/searxng:latest
+    restart: unless-stopped
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-change-me-searxng-secret}
+      GRANIAN_HOST: 0.0.0.0
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+
+  # Runs code for the assistant. Sits on an internal network: no internet, only core can reach it.
+  sandbox:
+    build: apps/sandbox
+    restart: unless-stopped
+    networks: [sandbox]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    mem_limit: 1g
+    cpus: 1
+    pids_limit: 128
 
   caddy:
     image: caddy:2
@@ -45,6 +74,11 @@ services:
       - caddy:/data
     depends_on:
       - core
+
+networks:
+  default:
+  sandbox:
+    internal: true
 
 volumes:
   pgdata:
