@@ -88,7 +88,7 @@ export default function App() {
         setTasks(t.tasks)
         setError(null)
       })
-      .catch((e) => setError({ botId: 0, text: e.message === 'Failed to fetch' ? `Can't reach ${conn.url}` : e.message }))
+      .catch((e) => setError({ botId: 0, text: e.message }))
   }, [api, conn, refreshBots])
 
   // Load a bot's timeline the first time it is opened.

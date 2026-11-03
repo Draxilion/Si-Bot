@@ -7,12 +7,19 @@ export interface Connection {
 
 const KEY = 'si.connection'
 
+// Defaults for a local install, from apps/desktop/.env.local (VITE_SIBOT_URL, VITE_SIBOT_TOKEN).
+const fallback: Connection = {
+  url: import.meta.env.VITE_SIBOT_URL || 'http://localhost:8787',
+  token: import.meta.env.VITE_SIBOT_TOKEN || '',
+}
+
 export function loadConnection(): Connection {
   try {
     const saved = JSON.parse(localStorage.getItem(KEY) ?? 'null')
-    if (saved?.url) return saved
+    // A saved connection without a token was never set up, so the local defaults win.
+    if (saved?.url && saved.token) return saved
   } catch {}
-  return { url: 'http://localhost:8787', token: '' }
+  return fallback
 }
 
 export function saveConnection(c: Connection) {
@@ -31,14 +38,26 @@ export class Api {
     return this.conn.url.replace(/\/$/, '')
   }
 
+  /** fetch with the token, turning network failures into errors that say what to fix. */
+  private async send(path: string, init: RequestInit = {}): Promise<Response> {
+    if (!this.conn.token) throw new Error('Not connected yet: add your server address and access token in Settings')
+    try {
+      return await fetch(this.base() + path, {
+        ...init,
+        headers: {
+          authorization: `Bearer ${this.conn.token}`,
+          ...(init.body instanceof FormData ? {} : { 'content-type': 'application/json' }),
+        },
+      })
+    } catch (e: any) {
+      // WebKit says "Load failed", Chromium "Failed to fetch": the server is down or the address is wrong.
+      if (e?.name === 'AbortError') throw e
+      throw new Error(`Can't reach the Si server at ${this.base()}. Check that it's running and the address in Settings.`)
+    }
+  }
+
   private async req<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const res = await fetch(this.base() + path, {
-      ...init,
-      headers: {
-        authorization: `Bearer ${this.conn.token}`,
-        ...(init.body instanceof FormData ? {} : { 'content-type': 'application/json' }),
-      },
-    })
+    const res = await this.send(path, init)
     if (!res.ok) {
       if (res.status === 401) throw new Error('Wrong access token')
       const err = await res.json().catch(() => ({}))
@@ -85,12 +104,7 @@ export class Api {
 
   /** Streams a reply; calls onEvent for each server-sent event. */
   async chat(body: ChatRequest, onEvent: (e: ChatEvent) => void, signal?: AbortSignal) {
-    const res = await fetch(this.base() + '/api/chat', {
-      method: 'POST',
-      signal,
-      headers: { authorization: `Bearer ${this.conn.token}`, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    })
+    const res = await this.send('/api/chat', { method: 'POST', signal, body: JSON.stringify(body) })
     if (!res.ok || !res.body) {
       const err = await res.json().catch(() => ({}))
       throw new Error(err.error ?? `Server error ${res.status}`)

@@ -39,7 +39,7 @@ docker compose up -d --build  # Postgres, SearXNG, sandbox and core server on ht
 pnpm tauri dev                # opens the Si app
 ```
 
-Open Settings in the app, enter `http://localhost:8787` and your `SIBOT_TOKEN`.
+Open Settings in the app, enter `http://localhost:8787` and your `SIBOT_TOKEN`. To skip that on your own machine, put `VITE_SIBOT_URL=http://localhost:8787` and `VITE_SIBOT_TOKEN=<your token>` in `apps/desktop/.env.local` (git-ignored) and the app connects on first launch.
 
 No Rust yet? `pnpm dev:desktop` serves the same UI at http://localhost:1420 in your browser.
 
