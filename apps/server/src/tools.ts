@@ -203,6 +203,7 @@ export function describeCall(name: string, input: any): string {
   }
   if (name === 'create_task') return `Scheduled "${input?.title ?? 'a task'}"`
   if (name === 'list_tasks') return 'Checked scheduled tasks'
+  if (name === 'update_notes') return 'Updated its notebook'
   if (name === 'cancel_task') return 'Cancelled a scheduled task'
   if (name === 'remember') return `Remembered: ${input?.fact ?? ''}`
   if (name === 'recall_memory') return `Searched memory for "${input?.query ?? ''}"`

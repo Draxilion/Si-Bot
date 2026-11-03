@@ -345,3 +345,12 @@ input:focus { border-color: var(--border-strong); }
 .result-meta { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
 .result-snippet { font-size: 14px; line-height: 1.55; }
 .result-snippet mark { background: var(--on-bg); color: var(--on); border-radius: 4px; padding: 0 2px; }
+
+/* Notebook and digest */
+.context-editors { display: flex; flex-direction: column; gap: 10px; margin: 24px 0 8px; }
+.context-card { border: 1px solid var(--border); border-radius: 16px; padding: 4px 16px; }
+.context-card[open] { padding-bottom: 14px; }
+.context-card summary { display: flex; flex-direction: column; gap: 2px; padding: 10px 0; cursor: pointer; list-style: none; font-weight: 600; }
+.context-card summary::-webkit-details-marker { display: none; }
+.small { font-size: 13px; font-weight: 400; }
+.context-card textarea { width: 100%; margin: 4px 0 10px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-soft); outline: 0; resize: vertical; font: 13.5px/1.55 ui-monospace, 'SF Mono', Menlo, monospace; }

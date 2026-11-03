@@ -7,8 +7,8 @@ import { memoryPrompt, memoryTools } from './memory.js'
 import { formatRecalled, recall } from './recall.js'
 import { taskTools } from './tasks.js'
 import { attachmentParts } from './attachments.js'
+import { contextPrompt, notebookTools, recentWindow } from './context.js'
 
-const CONTEXT_MESSAGES = Number(process.env.CONTEXT_MESSAGES ?? 40)
 const MAX_STEPS = 12
 const DEEP_MAX_STEPS = 30
 
@@ -32,8 +32,11 @@ Tools
 - Cite web sources inline as markdown links right after the claim, e.g. ([Reuters](https://...)). Never invent URLs.
 - run_code for any non-trivial arithmetic, finance, unit conversion, data work or checking code. Never estimate numbers
   you can compute.
-- remember when the user shares a durable fact about themselves or asks you to remember something. recall_memory only
-  when they refer to something from the past that is not in view.
+- remember when the user shares a durable fact about themselves or asks you to remember something. recall_memory when
+  they refer to something from the past that is not in view, or when the digest mentions it but you need the details.
+- update_notes to keep your notebook current when a project, decision, deadline or open loop changes.
+- Never say you can't remember earlier conversations or that a previous "session" is gone: you have one continuous
+  memory. If something isn't in view, look it up with recall_memory before answering.
 - create_task when the user wants something done later or on repeat (reminders, daily briefs, watching for news).
   Only offer follow-ups you can actually do with these tools.`
 
@@ -143,11 +146,10 @@ function hostOf(url: string) {
 
 /** The recent timeline as model messages, with attachments inlined. Images only travel with the newest message. */
 async function loadHistory(upToId: number): Promise<{ messages: ModelMessage[]; oldestId: number }> {
-  const rows = await sql`
-    select id, role, content from messages where id <= ${upToId} order by id desc limit ${CONTEXT_MESSAGES}`
+  const rows = await recentWindow(upToId)
   // A user message with no reply after it was interrupted (stopped, failed, or still running elsewhere). Leave it out,
   // or the model answers it again alongside the new one.
-  const ordered = [...rows].reverse().filter((r, i, all) => {
+  const ordered = rows.filter((r, i, all) => {
     if (r.role !== 'user' || Number(r.id) === upToId) return true
     return all[i + 1]?.role === 'assistant'
   })
@@ -170,7 +172,8 @@ export async function buildSystem(opts: { timezone: string; deep?: boolean; quer
   return (
     SYSTEM.replace('{now}', nowIn(opts.timezone)).replace('{tz}', opts.timezone) +
     (opts.deep ? DEEP : '') +
-    (await memoryPrompt()) +
+    (await memoryPrompt(opts.query)) +
+    (await contextPrompt()) +
     (recalled.length
       ? `\n\nRelevant moments from earlier in your timeline (recalled automatically; use them only if they help):\n${formatRecalled(recalled)}`
       : '') +
@@ -211,6 +214,7 @@ async function runTurnOnce(input: TurnInput): Promise<TurnResult> {
   const tools = {
     ...buildTools(),
     ...memoryTools(),
+    ...notebookTools(),
     ...(input.noTaskTools ? {} : taskTools(() => input.timezone)),
   }
 

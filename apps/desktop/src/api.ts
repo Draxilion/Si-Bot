@@ -51,6 +51,9 @@ export class Api {
   messages = (before?: number) => this.req<{ messages: Message[] }>(`/api/messages${before ? `?before=${before}` : ''}`)
   newer = (after: number) => this.req<{ messages: Message[] }>(`/api/messages?after=${after}`)
   search = (q: string) => this.req<{ messages: (Message & { snippet: string })[] }>(`/api/search?q=${encodeURIComponent(q)}`)
+  context = () => this.req<{ notes: string; digest: { text: string; upToId: number; updatedAt: string } | null }>('/api/context')
+  saveContext = (body: { notes?: string; digest?: string }) =>
+    this.req<{ notes: string; digest: { text: string; upToId: number; updatedAt: string } | null }>('/api/context', { method: 'PUT', body: JSON.stringify(body) })
   tasks = () => this.req<{ tasks: Task[] }>('/api/tasks')
   addTask = (t: { title: string; prompt: string; cron?: string; runAt?: string; timezone?: string }) =>
     this.req<{ tasks: Task[] }>('/api/tasks', { method: 'POST', body: JSON.stringify(t) })

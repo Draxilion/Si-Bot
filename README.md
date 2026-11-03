@@ -12,6 +12,7 @@ A self-hosted, persistent AI assistant with a native app. One assistant, one con
 - **Sources** under every web answer, and **follow-up suggestions** after each reply
 - **Files**: attach images (sent to vision models), PDFs and text/code files by picker, paste or drag and drop
 - **Tasks**: reminders and recurring jobs ("every weekday at 8, brief me on the news"). Si runs them on the server with all its tools and posts results into the timeline; the app shows a desktop notification
+- **Never-ending context**: no sessions and no dependence on the model's context window. Each prompt is built in layers: Si's own **notebook** of ongoing projects and open loops, a **rolling digest** of everything older than the recent window (updated in the background as messages age out), relevance-ranked **facts**, automatic **recall** of older moments, and the newest messages verbatim up to `CONTEXT_TOKENS`. Notebook and digest are readable and editable in the app
 - **Memory**: facts extracted after each exchange and injected into every prompt (viewable and editable in the app), plus recall over the whole timeline by keyword and by meaning (pgvector), and `remember` / `recall_memory` tools
 - **App**: bright Grok-style UI (Tauri 2 + React) with dark mode, math (KaTeX), syntax highlighting with copy buttons, read aloud, dictation, and a phone layout
 
@@ -66,3 +67,5 @@ All `/api/*` routes need `Authorization: Bearer $SIBOT_TOKEN`.
 | `POST /api/files`, `GET /api/files/:id` | Upload (multipart `file`, 20 MB max) and fetch attachments |
 | `GET/POST /api/tasks`, `PATCH/DELETE /api/tasks/:id`, `POST /api/tasks/:id/run` | Scheduled tasks |
 | `GET/POST /api/memory`, `DELETE /api/memory/:id` | Long-term facts |
+| `GET/PUT /api/context` | Si's notebook and the timeline digest |
+| `GET /api/search?q=` | Search the whole timeline |

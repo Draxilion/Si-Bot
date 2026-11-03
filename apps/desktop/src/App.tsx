@@ -597,7 +597,12 @@ function MemoryView({ api }: { api: Api }) {
   return (
     <div className="page">
       <h2>Memory</h2>
-      <p className="muted">What Si remembers about you. It learns these from conversations; you can add or remove anything.</p>
+      <p className="muted">
+        Si never starts over. Recent messages are read word for word; everything older lives in its notebook, a running
+        digest of your timeline, the facts below, and search over every message. All of it is yours to read and edit.
+      </p>
+      <ContextEditors api={api} />
+      <h3>Facts</h3>
       <form
         className="add-fact"
         onSubmit={async (e) => {
@@ -625,6 +630,49 @@ function MemoryView({ api }: { api: Api }) {
         ))}
         {facts.length === 0 && !error && <li className="muted">Nothing yet. Chat a little and Si will start remembering.</li>}
       </ul>
+    </div>
+  )
+}
+
+function ContextEditors({ api }: { api: Api }) {
+  const [notes, setNotes] = useState<string | null>(null)
+  const [digest, setDigest] = useState<string | null>(null)
+  const [meta, setMeta] = useState<string>('')
+  const [saved, setSaved] = useState<'notes' | 'digest' | null>(null)
+  useEffect(() => {
+    api.context().then(
+      (r) => {
+        setNotes(r.notes)
+        setDigest(r.digest?.text ?? '')
+        setMeta(r.digest ? `updated ${new Date(r.digest.updatedAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : '')
+      },
+      () => {},
+    )
+  }, [api])
+  if (notes === null) return null
+  const save = async (which: 'notes' | 'digest') => {
+    await api.saveContext(which === 'notes' ? { notes: notes ?? '' } : { digest: digest ?? '' })
+    setSaved(which)
+    setTimeout(() => setSaved(null), 1500)
+  }
+  return (
+    <div className="context-editors">
+      <details className="context-card" open={!!notes}>
+        <summary>
+          <span>Notebook</span>
+          <span className="muted small">What Si is tracking right now: projects, open loops, promises</span>
+        </summary>
+        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={8} placeholder="Si fills this in as it learns what you're working on." />
+        <button className="ghost" onClick={() => save('notes')}>{saved === 'notes' ? 'Saved' : 'Save notebook'}</button>
+      </details>
+      <details className="context-card">
+        <summary>
+          <span>Timeline digest</span>
+          <span className="muted small">{digest ? `Si's summary of older conversation, ${meta}` : 'Starts once your timeline outgrows the recent window'}</span>
+        </summary>
+        <textarea value={digest ?? ''} onChange={(e) => setDigest(e.target.value)} rows={14} />
+        <button className="ghost" onClick={() => save('digest')}>{saved === 'digest' ? 'Saved' : 'Save digest'}</button>
+      </details>
     </div>
   )
 }

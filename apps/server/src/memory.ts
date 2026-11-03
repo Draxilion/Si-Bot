@@ -20,11 +20,32 @@ export async function deleteFact(id: number) {
   await sql`delete from facts where id = ${id}`
 }
 
-/** Facts injected into every prompt. Phase 2 swaps this for pgvector recall once the list grows. */
-export async function memoryPrompt(): Promise<string> {
+const ALL_FACTS_UNDER = 80
+
+/**
+ * Facts injected into every prompt. Small lists go in whole; past ALL_FACTS_UNDER, the facts that match the
+ * message come first, then the newest, so the prompt stays bounded however much Si learns.
+ */
+export async function memoryPrompt(query = ''): Promise<string> {
   const facts = await listFacts()
   if (!facts.length) return ''
-  return `\n\nWhat you remember about the user (long-term memory):\n${facts.map((f) => `- ${f.text}`).join('\n')}`
+  let chosen = facts
+  if (facts.length > ALL_FACTS_UNDER) {
+    const terms = query.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []
+    const scored = facts
+      .map((f) => ({ f, score: terms.filter((t) => f.text.toLowerCase().includes(t)).length }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 30)
+      .map((x) => x.f)
+    const picked = new Set(scored.map((f) => f.id))
+    chosen = [...scored, ...facts.filter((f) => !picked.has(f.id)).slice(0, ALL_FACTS_UNDER - scored.length)]
+  }
+  const more = facts.length - chosen.length
+  return (
+    `\n\nWhat you remember about the user (long-term memory):\n${chosen.map((f) => `- ${f.text}`).join('\n')}` +
+    (more > 0 ? `\n(${more} older facts not shown; recall_memory can find them.)` : '')
+  )
 }
 
 function memoryModelId(): string | undefined {

@@ -9,6 +9,7 @@ import { defaultModel, discoverModels, listModels } from './providers.js'
 import { addFact, deleteFact, extractFacts, listFacts } from './memory.js'
 import { backfillEmbeddings, indexMessage } from './recall.js'
 import { runTurn, suggestFollowUps, validTimezone } from './agent.js'
+import { getDigest, getNotes, setDigestText, setNotes, updateDigest } from './context.js'
 import { createTask, deleteTask, listTasks, startScheduler, toTask, updateTask } from './tasks.js'
 import { attachmentsFor, claimAttachments, getAttachment, MAX_FILE_BYTES, saveAttachment } from './attachments.js'
 
@@ -118,6 +119,15 @@ app.delete('/api/memory/:id', async (c) => {
   return c.json({ facts: await listFacts() })
 })
 
+/** Si's notebook and the rolling digest of older history: both visible and editable in the app. */
+app.get('/api/context', async (c) => c.json({ notes: await getNotes(), digest: await getDigest() }))
+app.put('/api/context', async (c) => {
+  const body = await c.req.json<{ notes?: string; digest?: string }>()
+  if (typeof body.notes === 'string') await setNotes(body.notes)
+  if (typeof body.digest === 'string') await setDigestText(body.digest)
+  return c.json({ notes: await getNotes(), digest: await getDigest() })
+})
+
 app.get('/api/tasks', async (c) => c.json({ tasks: await listTasks() }))
 app.post('/api/tasks', async (c) => {
   const body = await c.req.json<{ title: string; prompt: string; cron?: string; runAt?: string; timezone?: string }>()
@@ -214,6 +224,7 @@ app.post('/api/chat', async (c) => {
         void extractFacts(content, result.text, Number(row.id))
         void indexMessage(Number(row.id), result.text)
       }
+      void updateDigest()
     }
     if (result.error) await send({ type: 'error', error: result.error }).catch(() => {})
     if (!result.partial && !result.error && !c.req.raw.signal.aborted) {
@@ -252,5 +263,6 @@ await migrate()
 await discoverModels()
 void backfillEmbeddings()
 startScheduler(runTask)
+void updateDigest()
 serve({ fetch: app.fetch, port, hostname: '0.0.0.0' })
 console.log(`Si-Bot core listening on :${port} with ${listModels().length} models`)
