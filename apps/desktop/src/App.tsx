@@ -4,6 +4,7 @@ import { Api, loadConnection, saveConnection, type Connection } from './api'
 import { Icon } from './icons'
 import { AssistantMessage, UserMessage, type LiveReply } from './Message'
 import { Composer } from './Composer'
+import { setFileResolver } from './Markdown'
 
 type View = 'chat' | 'tasks' | 'memory' | 'settings'
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -38,6 +39,7 @@ const STARTERS = [
 export default function App() {
   const [conn, setConn] = useState<Connection>(loadConnection)
   const api = useMemo(() => new Api(conn), [conn])
+  setFileResolver(api.fileUrl)
   const [view, setView] = useState<View>(conn.token ? 'chat' : 'settings')
   const [messages, setMessages] = useState<Message[]>([])
   const [hasOlder, setHasOlder] = useState(false)

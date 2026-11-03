@@ -1,11 +1,21 @@
 import { memo, useState, type ReactNode } from 'react'
-import ReactMarkdown from 'react-markdown'
+import ReactMarkdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import rehypeHighlight from 'rehype-highlight'
 import 'katex/dist/katex.min.css'
 import { Icon } from './icons'
+
+// Images Si makes (charts from run_code) are referenced as attachment:<id>; the app knows how to fetch them.
+let resolveFile: (id: number) => string = (id) => `/api/files/${id}`
+export function setFileResolver(fn: (id: number) => string) {
+  resolveFile = fn
+}
+
+function urlTransform(url: string) {
+  return url.startsWith('attachment:') ? url : defaultUrlTransform(url)
+}
 
 /** Text content of a rendered node tree, used to copy code blocks. */
 function textOf(node: ReactNode): string {
@@ -63,10 +73,20 @@ function normalizeMath(md: string) {
 export const Markdown = memo(function Markdown({ text }: { text: string }) {
   return (
     <ReactMarkdown
+      urlTransform={urlTransform}
       remarkPlugins={[remarkGfm, [remarkMath, { singleDollarTextMath: false }]]}
       rehypePlugins={[[rehypeKatex, { throwOnError: false, strict: false }], [rehypeHighlight, { detect: true, ignoreMissing: true }]]}
       components={{
         a: ({ node: _n, ...p }) => <a {...p} target="_blank" rel="noreferrer" />,
+        img: ({ node: _n, src, alt }) => {
+          const m = typeof src === 'string' ? src.match(/^attachment:(\d+)$/) : null
+          const url = m ? resolveFile(Number(m[1])) : src
+          return (
+            <a href={url as string} target="_blank" rel="noreferrer" className="md-image">
+              <img src={url as string} alt={alt ?? ''} loading="lazy" />
+            </a>
+          )
+        },
         pre: ({ children }) => <CodeBlock>{children}</CodeBlock>,
         table: ({ node: _n, ...p }) => (
           <div className="table-wrap">

@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { parseHTML } from 'linkedom'
 import { Readability } from '@mozilla/readability'
 import { extractText, getDocumentProxy } from 'unpdf'
+import { saveAttachment } from './attachments.js'
 
 const env = process.env
 const MAX_PAGE_CHARS = 20_000
@@ -112,7 +113,21 @@ async function runCode(language: 'python' | 'javascript', code: string) {
     signal: AbortSignal.timeout(60_000),
   })
   if (!res.ok) throw new Error(`Sandbox returned ${res.status}`)
-  return res.json() as Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }>
+  const out = (await res.json()) as {
+    stdout: string
+    stderr: string
+    exitCode: number | null
+    timedOut: boolean
+    images?: { name: string; mediaType: string; base64: string }[]
+  }
+  // Charts and other images the code saved are stored as files; the model gets markdown it can show in its answer.
+  const images = []
+  for (const img of out.images ?? []) {
+    const meta = await saveAttachment(img.name, img.mediaType, new Uint8Array(Buffer.from(img.base64, 'base64')))
+    images.push({ file: img.name, markdown: `![${img.name}](attachment:${meta.id})` })
+  }
+  const { images: _drop, ...rest } = out
+  return images.length ? { ...rest, images } : rest
 }
 
 /** Tools available to the assistant; each is enabled only when its backing service is configured. */
@@ -155,7 +170,9 @@ export function buildTools() {
     tools.run_code = tool({
       description:
         'Run Python or JavaScript in an isolated sandbox with no internet access and return stdout and stderr. ' +
-        'Use it for math, data analysis, parsing and checking code. Print what you need to see. Python has numpy and pandas.',
+        'Use it for math, data analysis, parsing and checking code. Print what you need to see. Python has numpy, pandas ' +
+        'and matplotlib: for a chart, save it with plt.savefig("chart.png", dpi=150, bbox_inches="tight"), then put the ' +
+        'returned markdown image in your answer so the user sees it.',
       inputSchema: z.object({
         language: z.enum(['python', 'javascript']),
         code: z.string(),

@@ -310,3 +310,29 @@ input:focus { border-color: var(--border-strong); }
   .msg.user, .msg-files { max-width: 90%; }
 }
 .task-form input { flex: none; }
+
+/* Tables: wrap at word boundaries, never letter by letter. */
+.msg.assistant table { overflow-wrap: normal; word-break: normal; }
+.msg.assistant th, .msg.assistant td { min-width: 96px; vertical-align: top; }
+
+/* Phones: bottom tab bar and a compact composer. */
+@media (max-width: 640px) {
+  .app { flex-direction: column-reverse; }
+  .rail { width: 100%; height: auto; flex-direction: row; justify-content: space-around; padding: 4px 8px calc(4px + env(safe-area-inset-bottom)); border-right: 0; border-top: 1px solid var(--border); }
+  .rail .logo { display: none; }
+  .rail-btn { width: auto; flex: 1; padding: 6px 0; }
+  .rail-btn span { display: block; font-size: 10px; }
+  .badge { right: calc(50% - 22px); }
+  .main { min-height: 0; }
+  .thread { padding: 16px 14px; }
+  .dock { padding: 6px 10px 10px; }
+  .composer { padding: 10px 10px 8px 14px; border-radius: 24px; }
+  .composer-row { gap: 6px; }
+  .pill { height: 34px; padding: 0 10px; }
+  .pill.icon-only { width: 34px; }
+  .pill.select { flex: 0 1 auto; min-width: 0; max-width: 128px; text-overflow: ellipsis; }
+  .send { width: 34px; height: 34px; }
+  .page { padding: 28px 16px; }
+  .hero { padding-bottom: 6vh; }
+}
+.md-image { display: block; margin: 12px 0; } .md-image img { display: block; max-width: 100%; max-height: 480px; border-radius: 14px; border: 1px solid var(--border); background: #fff; }
