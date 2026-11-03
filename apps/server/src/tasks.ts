@@ -63,6 +63,21 @@ export async function deleteTask(id: number) {
   await sql`delete from tasks where id = ${id}`
 }
 
+/** "Wed 4 Nov 2026, 09:00" in the task's own timezone, so the model never reads UTC back to the user as local time. */
+function localTime(iso: string | null, timezone: string) {
+  if (!iso) return null
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: timezone, weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  }).format(new Date(iso)) + ` (${timezone})`
+}
+
+function forModel(t: Task) {
+  return {
+    id: t.id, title: t.title, prompt: t.prompt, cron: t.cron, enabled: t.enabled,
+    next_run: localTime(t.nextRunAt, t.timezone), last_run: localTime(t.lastRunAt, t.timezone),
+  }
+}
+
 /** Tools that let Si schedule work for itself. */
 export function taskTools(getTimezone: () => string | undefined) {
   return {
@@ -81,13 +96,13 @@ export function taskTools(getTimezone: () => string | undefined) {
       }),
       execute: async ({ title, prompt, cron, run_at }) => {
         const task = await createTask({ title, prompt, cron, runAt: run_at, timezone: getTimezone() })
-        return { scheduled: task.title, id: task.id, next_run: task.nextRunAt, timezone: task.timezone }
+        return { scheduled: task.title, id: task.id, next_run: localTime(task.nextRunAt, task.timezone) }
       },
     }),
     list_tasks: tool({
       description: 'List your scheduled tasks with their ids and next run times.',
       inputSchema: z.object({}),
-      execute: async () => ({ tasks: await listTasks() }),
+      execute: async () => ({ tasks: (await listTasks()).map(forModel) }),
     }),
     cancel_task: tool({
       description: 'Delete a scheduled task by id (use list_tasks to find it).',
