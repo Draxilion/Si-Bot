@@ -336,3 +336,12 @@ input:focus { border-color: var(--border-strong); }
   .hero { padding-bottom: 6vh; }
 }
 .md-image { display: block; margin: 12px 0; } .md-image img { display: block; max-width: 100%; max-height: 480px; border-radius: 14px; border: 1px solid var(--border); background: #fff; }
+
+/* Search */
+.search-input { margin: 20px 0 12px; }
+.results { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.results li { padding: 12px 16px; border: 1px solid var(--border); border-radius: 14px; cursor: pointer; }
+.results li:hover { background: var(--bg-soft); }
+.result-meta { font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+.result-snippet { font-size: 14px; line-height: 1.55; }
+.result-snippet mark { background: var(--on-bg); color: var(--on); border-radius: 4px; padding: 0 2px; }

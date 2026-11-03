@@ -4,9 +4,9 @@ import { Api, loadConnection, saveConnection, type Connection } from './api'
 import { Icon } from './icons'
 import { AssistantMessage, UserMessage, type LiveReply } from './Message'
 import { Composer } from './Composer'
-import { setFileResolver } from './Markdown'
+import { Markdown, setFileResolver } from './Markdown'
 
-type View = 'chat' | 'tasks' | 'memory' | 'settings'
+type View = 'chat' | 'search' | 'tasks' | 'memory' | 'settings'
 const TZ = Intl.DateTimeFormat().resolvedOptions().timeZone
 
 function usePref<T>(key: string, initial: T): [T, (v: T) => void] {
@@ -180,7 +180,7 @@ export default function App() {
         <div className="logo" title="Si">
           <img src="/si.svg" alt="Si" />
         </div>
-        {(['chat', 'tasks', 'memory', 'settings'] as View[]).map((v) => (
+        {(['chat', 'search', 'tasks', 'memory', 'settings'] as View[]).map((v) => (
           <button key={v} className={`rail-btn ${view === v ? 'active' : ''}`} onClick={() => setView(v)} title={v}>
             {Icon[v]}
             <span>{v[0].toUpperCase() + v.slice(1)}</span>
@@ -219,6 +219,7 @@ export default function App() {
             }}
           />
         )}
+        {view === 'search' && <SearchView api={api} />}
         {view === 'tasks' && <TasksView api={api} tasks={tasks} setTasks={setTasks} />}
         {view === 'memory' && <MemoryView api={api} />}
         {view === 'settings' && (
@@ -526,6 +527,58 @@ function TasksView({ api, tasks, setTasks }: { api: Api; tasks: Task[]; setTasks
         </div>
       </form>
       {error && <div className="error">{error}</div>}
+    </div>
+  )
+}
+
+/** Markdown syntax reads as noise in a two-line snippet. */
+function plainSnippet(s: string) {
+  return s
+    .replace(/\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?/g, ' ')
+    .replace(/[*`#]+/g, '')
+    .replace(/\s*\|\s*/g, ' · ')
+    .replace(/(\s·)+/g, ' ·')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function SearchView({ api }: { api: Api }) {
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState<(Message & { snippet: string })[] | null>(null)
+  const [open, setOpen] = useState<number | null>(null)
+  useEffect(() => {
+    if (!q.trim()) return setResults(null)
+    const t = setTimeout(() => api.search(q).then((r) => setResults(r.messages), () => setResults([])), 250)
+    return () => clearTimeout(t)
+  }, [api, q])
+  return (
+    <div className="page">
+      <h2>Search</h2>
+      <p className="muted">Everything you and Si have ever said, in one timeline.</p>
+      <input className="search-input" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search your conversation…" autoFocus />
+      {results && (
+        <ul className="results">
+          {results.map((m) => (
+            <li key={m.id} onClick={() => setOpen(open === m.id ? null : m.id)}>
+              <div className="result-meta">
+                {m.role === 'user' ? 'You' : 'Si'} · {new Date(m.createdAt).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}
+              </div>
+              {open === m.id ? (
+                <div className="msg assistant">
+                  <Markdown text={m.content} />
+                </div>
+              ) : (
+                <div className="result-snippet">
+                  {plainSnippet(m.snippet).split(/(<<.*?>>)/g).map((part, i) =>
+                    part.startsWith('<<') ? <mark key={i}>{part.slice(2, -2)}</mark> : <span key={i}>{part}</span>,
+                  )}
+                </div>
+              )}
+            </li>
+          ))}
+          {results.length === 0 && <li className="muted">No matches.</li>}
+        </ul>
+      )}
     </div>
   )
 }

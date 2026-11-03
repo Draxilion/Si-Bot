@@ -50,6 +50,7 @@ export class Api {
   models = () => this.req<{ models: ModelOption[]; default: string | null }>('/api/models')
   messages = (before?: number) => this.req<{ messages: Message[] }>(`/api/messages${before ? `?before=${before}` : ''}`)
   newer = (after: number) => this.req<{ messages: Message[] }>(`/api/messages?after=${after}`)
+  search = (q: string) => this.req<{ messages: (Message & { snippet: string })[] }>(`/api/search?q=${encodeURIComponent(q)}`)
   tasks = () => this.req<{ tasks: Task[] }>('/api/tasks')
   addTask = (t: { title: string; prompt: string; cron?: string; runAt?: string; timezone?: string }) =>
     this.req<{ tasks: Task[] }>('/api/tasks', { method: 'POST', body: JSON.stringify(t) })

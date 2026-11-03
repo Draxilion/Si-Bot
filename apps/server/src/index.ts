@@ -81,6 +81,26 @@ app.get('/api/messages', async (c) => {
   return c.json({ messages: await withAttachments([...rows].reverse()) })
 })
 
+/** Search the whole timeline: full-text first, substring match as a fallback for short or partial words. */
+app.get('/api/search', async (c) => {
+  const q = (c.req.query('q') ?? '').trim()
+  if (!q) return c.json({ messages: [] })
+  const terms = q.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []
+  let rows: any[] = []
+  if (terms.length) {
+    const tsq = terms.map((t) => `${t}:*`).join(' & ')
+    rows = await sql`
+      select *, ts_headline('simple', content, to_tsquery('simple', ${tsq}),
+        'MaxFragments=2, MaxWords=24, MinWords=8, StartSel=<<, StopSel=>>') as snippet
+      from messages where tsv @@ to_tsquery('simple', ${tsq})
+      order by id desc limit 50`
+  }
+  if (!rows.length) {
+    rows = await sql`select *, left(content, 240) as snippet from messages where content ilike ${'%' + q + '%'} order by id desc limit 50`
+  }
+  return c.json({ messages: rows.map((r) => ({ ...toMessage(r), snippet: r.snippet })) })
+})
+
 app.delete('/api/messages/:id', async (c) => {
   await sql`delete from messages where id = ${Number(c.req.param('id'))}`
   return c.json({ ok: true })

@@ -3,6 +3,12 @@ const svg = (children: React.ReactNode) => <svg viewBox="0 0 24 24">{children}</
 
 export const Icon = {
   chat: svg(<path d="M4 5h16v11H8l-4 4z" />),
+  search: svg(
+    <>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="M20 20l-4.2-4.2" />
+    </>,
+  ),
   tasks: svg(
     <>
       <circle cx="12" cy="13" r="8" />
