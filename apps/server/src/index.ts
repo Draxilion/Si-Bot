@@ -8,7 +8,8 @@ import type { ChatEvent, ChatRequest, Message, ToolStep } from '@si-bot/shared'
 import { migrate, sql } from './db.js'
 import { defaultModel, getModel, listModels, thinkOptions } from './providers.js'
 import { buildTools, describeCall } from './tools.js'
-import { addFact, deleteFact, extractFacts, listFacts, memoryPrompt } from './memory.js'
+import { addFact, deleteFact, extractFacts, listFacts, memoryPrompt, memoryTools } from './memory.js'
+import { backfillEmbeddings, formatRecalled, indexMessage, recall } from './recall.js'
 
 const token = process.env.SIBOT_TOKEN
 if (!token || token === 'change-me') {
@@ -16,16 +17,17 @@ if (!token || token === 'change-me') {
   process.exit(1)
 }
 
-const CONTEXT_MESSAGES = 40
+const CONTEXT_MESSAGES = Number(process.env.CONTEXT_MESSAGES ?? 40)
 const MAX_STEPS = 10
-const tools = buildTools()
+const tools = { ...buildTools(), ...memoryTools() }
 
 const SYSTEM = `You are Si, a personal AI assistant. You are one persistent assistant, not a fresh session:
 the conversation below is a single continuous timeline with the user, and you keep long-term memory across it.
 Be direct, warm and concise. Use markdown when it helps. Today is {date}.
 Use your tools whenever they make the answer better: search the web for anything current or uncertain and read the
 best sources before answering, and run code for math, data or anything you would otherwise estimate.
-When you use web sources, cite them inline as markdown links.`
+When you use web sources, cite them inline as markdown links.
+Save anything the user wants remembered with the remember tool, and use recall_memory to look up older conversations.`
 
 function toMessage(r: any): Message {
   return {
@@ -76,9 +78,17 @@ app.post('/api/chat', async (c) => {
   if (!modelId) return c.json({ error: 'No provider configured. Add an API key to .env.' }, 400)
 
   const [userRow] = await sql`insert into messages (role, content) values ('user', ${content}) returning *`
-  const history = await sql`select role, content from messages order by id desc limit ${CONTEXT_MESSAGES}`
-  const messages: ModelMessage[] = history.reverse().map((r) => ({ role: r.role, content: r.content }))
-  const system = SYSTEM.replace('{date}', new Date().toDateString()) + (await memoryPrompt())
+  void indexMessage(Number(userRow.id), content)
+  const history = await sql`select id, role, content from messages order by id desc limit ${CONTEXT_MESSAGES}`
+  const messages: ModelMessage[] = [...history].reverse().map((r) => ({ role: r.role, content: r.content }))
+  const oldestInContext = Number(history.at(-1)?.id ?? userRow.id)
+  const recalled = await recall(content, { beforeId: oldestInContext }).catch(() => [])
+  const system =
+    SYSTEM.replace('{date}', new Date().toDateString()) +
+    (await memoryPrompt()) +
+    (recalled.length
+      ? `\n\nRelevant moments from earlier in your timeline (recalled automatically; use them only if they help):\n${formatRecalled(recalled)}`
+      : '')
 
   return streamSSE(c, async (stream) => {
     const send = (e: ChatEvent) => stream.writeSSE({ data: JSON.stringify(e) })
@@ -126,6 +136,7 @@ app.post('/api/chat', async (c) => {
         returning *`
       await send({ type: 'done', message: toMessage(row) })
       void extractFacts(content, full, Number(row.id))
+      void indexMessage(Number(row.id), full)
     } catch (err: any) {
       console.error('[chat]', err)
       await send({ type: 'error', error: err?.message ?? String(err) })
@@ -135,5 +146,6 @@ app.post('/api/chat', async (c) => {
 
 const port = Number(process.env.PORT ?? 8787)
 await migrate()
+void backfillEmbeddings()
 serve({ fetch: app.fetch, port, hostname: '0.0.0.0' })
 console.log(`Si-Bot core listening on :${port} with ${listModels().length} models, tools: ${Object.keys(tools).join(', ')}`)

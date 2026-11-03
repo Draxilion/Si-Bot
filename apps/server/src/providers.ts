@@ -55,6 +55,20 @@ for (const entry of (env.EXTRA_MODELS ?? '').split(',').filter(Boolean)) {
 
 const registry = createProviderRegistry(providers)
 
+/**
+ * Embedding model for semantic memory recall, as "provider:model". EMBEDDING_MODEL overrides the default
+ * (OpenAI text-embedding-3-small when an OpenAI key is set). Without one, recall falls back to keyword search.
+ */
+export function embeddingModelId(): string | undefined {
+  const wanted = env.EMBEDDING_MODEL
+  if (wanted) return providers[wanted.split(':')[0]] ? wanted : undefined
+  return providers.openai ? 'openai:text-embedding-3-small' : undefined
+}
+
+export function getEmbeddingModel(id: string) {
+  return registry.embeddingModel(id as `${string}:${string}`)
+}
+
 export function listModels(): ModelOption[] {
   return models
 }

@@ -8,11 +8,11 @@ A self-hosted, persistent AI assistant with a native app. One assistant, one con
 - Providers by API key: Anthropic, OpenAI, OpenRouter, Ollama (plus any model via `EXTRA_MODELS`)
 - Think mode (extended reasoning on Claude and OpenAI)
 - Tools with live steps in the app: web search (self-hosted SearXNG, or Brave with `BRAVE_API_KEY`), reading web pages, and a code sandbox for Python (numpy, pandas, matplotlib) and JavaScript
-- Memory v1: facts extracted after each exchange, injected into every prompt, viewable and editable in the app
+- Memory: facts extracted after each exchange and injected into every prompt (viewable and editable in the app), plus recall over the whole timeline. Each message Si gets pulls in relevant older moments by keyword and by meaning (pgvector), and Si has `remember` and `recall_memory` tools
 - Bright desktop UI (Tauri 2 + React), dark mode follows the system
 - Docker Compose for local and VPS, with automatic HTTPS via Caddy
 
-Next up: pgvector memory recall, then agents, scheduled tasks, MCP and subscription bridges (Claude Code, Codex, opencode). See the plan doc for the full roadmap.
+Next up: agents, scheduled tasks, MCP and subscription bridges (Claude Code, Codex, opencode). See the plan doc for the full roadmap.
 
 ## Layout
 
