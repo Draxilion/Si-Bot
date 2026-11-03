@@ -16,10 +16,12 @@
     "@mozilla/readability": "^0.6.0",
     "@si-bot/shared": "workspace:*",
     "ai": "^7.0.162",
+    "croner": "^11.0.0",
     "hono": "^4.13.16",
     "linkedom": "^0.18.15",
     "postgres": "^4.0.0",
     "tsx": "^4.23.15",
+    "unpdf": "^2.1.0",
     "zod": "^4.6.7"
   },
   "devDependencies": {

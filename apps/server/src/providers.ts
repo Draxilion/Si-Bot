@@ -10,6 +10,8 @@ const env = process.env
 // Each provider is enabled only when its key or URL is set.
 const providers: Record<string, any> = {}
 const models: ModelOption[] = []
+/** OpenAI-compatible providers whose full model list is fetched at boot, so new models appear without code changes. */
+const discover: { provider: string; baseURL: string; apiKey?: string; suffix: string }[] = []
 
 function add(provider: string, defaults: [string, string][]) {
   for (const [id, label] of defaults) models.push({ id: `${provider}:${id}`, label, provider })
@@ -60,10 +62,11 @@ if (env.OPENCODE_API_KEY) {
     ['deepseek-v4.1-flash', 'DeepSeek V4.1 Flash (OpenCode Go)'],
     ['deepseek-v4-pro', 'DeepSeek V4 Pro (OpenCode Go)'],
   ])
+  discover.push({ provider: 'opencode', baseURL: env.OPENCODE_BASE_URL || 'https://opencode.ai/zen/go/v1', apiKey: env.OPENCODE_API_KEY, suffix: 'OpenCode Go' })
 }
 if (env.OLLAMA_BASE_URL) {
   providers.ollama = createOpenAICompatible({ name: 'ollama', baseURL: env.OLLAMA_BASE_URL })
-  add('ollama', [['llama3.2', 'Llama 3.2 (local)']])
+  discover.push({ provider: 'ollama', baseURL: env.OLLAMA_BASE_URL, suffix: 'local' })
 }
 
 // EXTRA_MODELS="openai:o3=o3,openrouter:qwen/qwen3-max=Qwen 3 Max" adds models without code changes.
@@ -74,6 +77,43 @@ for (const entry of (env.EXTRA_MODELS ?? '').split(',').filter(Boolean)) {
 }
 
 const registry = createProviderRegistry(providers)
+
+/** Readable label from a model id: "grok-4.7" -> "Grok 4.7", "qwen3.8-max" -> "Qwen3.8 Max". */
+export function prettyModelName(id: string): string {
+  const special: Record<string, string> = { glm: 'GLM', gpt: 'GPT', hy: 'HY', mimo: 'MiMo', deepseek: 'DeepSeek', minimax: 'MiniMax', longcat: 'LongCat' }
+  return id
+    .split(/[-_]/)
+    .map((w) => {
+      const m = w.match(/^([a-z]+)(.*)$/)
+      if (!m) return w
+      return (special[m[1]] ?? m[1][0].toUpperCase() + m[1].slice(1)) + m[2]
+    })
+    .join(' ')
+}
+
+/**
+ * Fetches each discoverable provider's /models list and adds models not already configured.
+ * Contributor and free-tier models (which may train on prompts) are skipped. Failures leave the curated list.
+ */
+export async function discoverModels() {
+  for (const d of discover) {
+    try {
+      const res = await fetch(`${d.baseURL.replace(/\/$/, '')}/models`, {
+        headers: d.apiKey ? { authorization: `Bearer ${d.apiKey}` } : {},
+        signal: AbortSignal.timeout(10_000),
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data: any = await res.json()
+      const ids: string[] = (data.data ?? []).map((m: any) => m.id).filter((id: string) => !/contributor|free/i.test(id))
+      for (const id of ids) {
+        const full = `${d.provider}:${id}`
+        if (!models.some((m) => m.id === full)) models.push({ id: full, label: `${prettyModelName(id)} (${d.suffix})`, provider: d.provider })
+      }
+    } catch (err) {
+      console.error(`[models] could not list ${d.provider} models:`, (err as Error).message)
+    }
+  }
+}
 
 /**
  * Embedding model for semantic memory recall, as "provider:model". EMBEDDING_MODEL overrides the default
@@ -108,5 +148,6 @@ export function thinkOptions(id: string) {
   const provider = id.split(':')[0]
   if (provider === 'anthropic') return { anthropic: { thinking: { type: 'enabled', budgetTokens: 8000 } } }
   if (provider === 'openai') return { openai: { reasoningEffort: 'high' } }
-  return undefined
+  // OpenAI-compatible providers (OpenCode Go, OpenRouter, Ollama) pass reasoning_effort through to the model.
+  return { [provider]: { reasoningEffort: 'high' } }
 }

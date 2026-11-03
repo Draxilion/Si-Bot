@@ -1,18 +1,23 @@
 # Si-Bot
 
-A self-hosted, persistent AI assistant with a native app. One assistant, one continuous timeline, long-term memory, and a server that keeps working while the app is closed. Bring your own models: Claude, OpenAI, OpenRouter (Grok, Gemini, DeepSeek and more) or local models through Ollama.
+A self-hosted team of persistent AI bots with a native app. Each bot has its own continuous timeline, long-term memory, and a server that keeps working while the app is closed. Bring your own models: Claude, OpenAI, OpenRouter (Grok, Gemini, DeepSeek and more) or local models through Ollama.
 
-## What works today (Phase 1, in progress)
+## What works today
 
-- Streaming chat on one persistent timeline, stored in Postgres
-- Providers by API key: Anthropic, OpenAI, OpenRouter, OpenCode Go, Ollama (plus any model via `EXTRA_MODELS`)
-- Think mode (extended reasoning on Claude and OpenAI)
-- Tools with live steps in the app: web search (self-hosted SearXNG, or Brave with `BRAVE_API_KEY`), reading web pages, and a code sandbox for Python (numpy, pandas, matplotlib) and JavaScript
-- Memory: facts extracted after each exchange and injected into every prompt (viewable and editable in the app), plus recall over the whole timeline. Each message Si gets pulls in relevant older moments by keyword and by meaning (pgvector), and Si has `remember` and `recall_memory` tools
-- Bright desktop UI (Tauri 2 + React), dark mode follows the system
-- Docker Compose for local and VPS, with automatic HTTPS via Caddy
+- **A team of bots, Grok-style**: the left sidebar lists named bots with avatars and roles, pinned favourites as large avatars on top, the rest grouped by team, each with its last message, time and unread dot. Every bot has its own persistent timeline, notebook, digest, recall, tasks, model and instructions; facts about you are shared by all. A right panel per bot has **Details** (avatar, name, role, team, model, instructions, scheduled tasks, memory), **Library** (files shared with it and images it made) and **Computer** (every search, page read and code run). Bots can **message each other** (`message_bot`): the receiving bot answers in its own timeline and the reply comes back to the sender. A starter team (Si, Researchy, News, Hank, Quill, Nova) is created on first boot
+- **One persistent timeline** in Postgres: no sessions, no "new chat". Edit your last message, regenerate the last reply, stop mid-answer (the partial reply is kept)
+- **Models**: Anthropic, OpenAI, OpenRouter, OpenCode Go, Ollama. OpenCode Go and Ollama models are discovered at boot, so every model your key can use shows up (Grok 4.7, Kimi K3, Qwen 3.8, DeepSeek V4, GLM 5.3, Gemini…). `FALLBACK_MODEL` answers when the chosen model fails before replying
+- **Think**: reasoning streams live into a collapsible "Thinking" panel, on every provider that exposes it
+- **DeepSearch**: multi-round research across many sources with a structured, cited report
+- **Tools with live steps**: parallel web search with a recency filter (self-hosted SearXNG, or Brave), reading pages and PDFs, a sandbox for Python (numpy, pandas, matplotlib, scipy, sympy) and JavaScript. Charts the code saves show up in the answer
+- **Sources** under every web answer, and **follow-up suggestions** after each reply
+- **Files**: attach images (sent to vision models), PDFs and text/code files by picker, paste or drag and drop
+- **Tasks**: reminders and recurring jobs ("every weekday at 8, brief me on the news"). Si runs them on the server with all its tools and posts results into the timeline; the app shows a desktop notification
+- **Never-ending context**: no sessions and no dependence on the model's context window. Each prompt is built in layers: Si's own **notebook** of ongoing projects and open loops, a **rolling digest** of everything older than the recent window (updated in the background as messages age out), relevance-ranked **facts**, automatic **recall** of older moments, and the newest messages verbatim up to `CONTEXT_TOKENS`. Notebook and digest are readable and editable in the app
+- **Memory**: facts extracted after each exchange and injected into every prompt (viewable and editable in the app), plus recall over the whole timeline by keyword and by meaning (pgvector), and `remember` / `recall_memory` tools
+- **App**: bright Grok-style UI (Tauri 2 + React) with dark mode, math (KaTeX), syntax highlighting with copy buttons, read aloud, dictation, and a phone layout
 
-Next up: agents, scheduled tasks, MCP and subscription bridges (Claude Code, Codex, opencode). See the plan doc for the full roadmap.
+Next up: image generation, MCP, voice mode and subscription bridges (Claude Code, Codex, opencode). See the plan doc for the full roadmap.
 
 ## Layout
 
@@ -34,7 +39,7 @@ docker compose up -d --build  # Postgres, SearXNG, sandbox and core server on ht
 pnpm tauri dev                # opens the Si app
 ```
 
-Open Settings in the app, enter `http://localhost:8787` and your `SIBOT_TOKEN`.
+Open Settings in the app, enter `http://localhost:8787` and your `SIBOT_TOKEN`. To skip that on your own machine, put `VITE_SIBOT_URL=http://localhost:8787` and `VITE_SIBOT_TOKEN=<your token>` in `apps/desktop/.env.local` (git-ignored) and the app connects on first launch.
 
 No Rust yet? `pnpm dev:desktop` serves the same UI at http://localhost:1420 in your browser.
 
@@ -56,6 +61,14 @@ All `/api/*` routes need `Authorization: Bearer $SIBOT_TOKEN`.
 | Route | Purpose |
 | --- | --- |
 | `GET /api/models` | Configured models and the default |
-| `GET /api/messages?before=<id>` | The timeline, 100 at a time |
-| `POST /api/chat` | `{content, model?, think?}`, streams server-sent events |
+| `GET/POST /api/bots`, `PATCH/DELETE /api/bots/:id` | Bots: name, role, avatar, team, pinned, model, instructions |
+| `GET /api/bots/:id/library`, `GET /api/bots/:id/activity` | A bot's files and its tool activity |
+| `GET /api/messages?bot=<id>&before=<id>` | A bot's timeline, 100 at a time |
+| `GET /api/messages?bot=<id>&after=<id>` | Newer messages (the app polls this for task results) |
+| `DELETE /api/messages/:id` | Delete one message |
+| `POST /api/chat` | `{botId?, content, model?, think?, deep?, timezone?, attachments?, replaceFrom?, regenerate?}`, streams server-sent events |
+| `POST /api/files`, `GET /api/files/:id` | Upload (multipart `file`, 20 MB max) and fetch attachments |
+| `GET/POST /api/tasks`, `PATCH/DELETE /api/tasks/:id`, `POST /api/tasks/:id/run` | Scheduled tasks |
 | `GET/POST /api/memory`, `DELETE /api/memory/:id` | Long-term facts |
+| `GET/PUT /api/context?bot=<id>` | A bot's notebook and timeline digest |
+| `GET /api/search?q=` | Search the whole timeline |

@@ -42,9 +42,13 @@ export async function backfillEmbeddings(batch = 200) {
  * Hybrid recall over the timeline: full-text and vector search, merged with reciprocal rank fusion.
  * `beforeId` excludes messages already in the prompt's recent context.
  */
-export async function recall(query: string, opts: { beforeId?: number; limit?: number } = {}): Promise<Recalled[]> {
+export async function recall(
+  query: string,
+  opts: { beforeId?: number; limit?: number; botId?: number } = {},
+): Promise<Recalled[]> {
   const limit = opts.limit ?? 6
   const beforeId = opts.beforeId ?? Number.MAX_SAFE_INTEGER
+  const bot = opts.botId ? sql`and bot_id = ${opts.botId}` : sql``
   const ranks = new Map<number, number>()
   const add = (ids: number[]) => ids.forEach((id, i) => ranks.set(id, (ranks.get(id) ?? 0) + 1 / (RRF_K + i + 1)))
 
@@ -53,7 +57,7 @@ export async function recall(query: string, opts: { beforeId?: number; limit?: n
     const tsq = terms.slice(0, 12).join(' | ')
     const rows = await sql`
       select id from messages
-      where id < ${beforeId} and tsv @@ to_tsquery('simple', ${tsq})
+      where id < ${beforeId} ${bot} and tsv @@ to_tsquery('simple', ${tsq})
       order by ts_rank(tsv, to_tsquery('simple', ${tsq})) desc
       limit 20`
     add(rows.map((r) => Number(r.id)))
@@ -64,7 +68,7 @@ export async function recall(query: string, opts: { beforeId?: number; limit?: n
     if (v) {
       const rows = await sql`
         select id from messages
-        where id < ${beforeId} and embedding is not null and vector_dims(embedding) = ${v.length}
+        where id < ${beforeId} ${bot} and embedding is not null and vector_dims(embedding) = ${v.length}
         order by embedding <=> ${toVector(v)}::vector
         limit 20`
       add(rows.map((r) => Number(r.id)))
