@@ -1,0 +1,5 @@
+{$DOMAIN} {
+	reverse_proxy core:8787 {
+		flush_interval -1
+	}
+}

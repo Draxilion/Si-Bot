@@ -1,0 +1,51 @@
+# Local:  docker compose up -d           (server on http://localhost:8787)
+# VPS:    docker compose --profile vps up -d   (adds Caddy with automatic HTTPS for $DOMAIN)
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: sibot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sibot}
+      POSTGRES_DB: sibot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sibot"]
+      interval: 5s
+      retries: 10
+
+  core:
+    build:
+      context: .
+      dockerfile: apps/server/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://sibot:${POSTGRES_PASSWORD:-sibot}@postgres:5432/sibot
+    ports:
+      - "127.0.0.1:8787:8787"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  caddy:
+    image: caddy:2
+    profiles: ["vps"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy:/data
+    depends_on:
+      - core
+
+volumes:
+  pgdata:
+  caddy:

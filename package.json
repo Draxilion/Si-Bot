@@ -1,0 +1,14 @@
+{
+  "name": "si-bot",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Self-hosted, persistent AI assistant with a native app",
+  "scripts": {
+    "dev:server": "pnpm --filter @si-bot/server dev",
+    "dev:desktop": "pnpm --filter @si-bot/desktop dev",
+    "tauri": "pnpm --filter @si-bot/desktop tauri",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "packageManager": "pnpm@10.28.0"
+}
